@@ -6,7 +6,7 @@ from .models import Client, Commande, Livraison, Livreur, Paiement, Produit, Ven
 class VendeurSerializer(serializers.ModelSerializer):
     class Meta:
         model = Vendeur
-        fields = ['id', 'nom', 'contact']
+        fields = ['id', 'nom', 'contact', 'user']
 
 
 class ProduitSerializer(serializers.ModelSerializer):
@@ -21,18 +21,7 @@ class ProduitSerializer(serializers.ModelSerializer):
 class ClientSerializer(serializers.ModelSerializer):
     class Meta:
         model = Client
-        fields = ['id', 'nom', 'telephone', 'adresse', 'date_livraison_preferee']
-
-
-class CommandeSerializer(serializers.ModelSerializer):
-    client = ClientSerializer(read_only=True)
-    client_id = serializers.PrimaryKeyRelatedField(queryset=Client.objects.all(), source='client', write_only=True)
-    produit = ProduitSerializer(read_only=True)
-    produit_id = serializers.PrimaryKeyRelatedField(queryset=Produit.objects.all(), source='produit', write_only=True)
-
-    class Meta:
-        model = Commande
-        fields = ['id', 'client', 'client_id', 'produit', 'produit_id', 'ordre_jp', 'statut', 'date_creation']
+        fields = ['id', 'nom', 'telephone', 'adresse', 'date_livraison_preferee', 'facebook_id', 'tiktok_id']
 
 
 class PaiementSerializer(serializers.ModelSerializer):
@@ -67,6 +56,30 @@ class LivraisonSerializer(serializers.ModelSerializer):
             'updated_at',
             'livreur',
             'livreur_id',
+        ]
+
+
+class CommandeSerializer(serializers.ModelSerializer):
+    client = ClientSerializer(read_only=True)
+    client_id = serializers.PrimaryKeyRelatedField(queryset=Client.objects.all(), source='client', write_only=True)
+    produit = ProduitSerializer(read_only=True)
+    produit_id = serializers.PrimaryKeyRelatedField(queryset=Produit.objects.all(), source='produit', write_only=True)
+    paiement = PaiementSerializer(read_only=True)
+    livraison = LivraisonSerializer(read_only=True)
+
+    class Meta:
+        model = Commande
+        fields = [
+            'id',
+            'client',
+            'client_id',
+            'produit',
+            'produit_id',
+            'ordre_jp',
+            'statut',
+            'date_creation',
+            'paiement',
+            'livraison',
         ]
 
 

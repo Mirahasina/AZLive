@@ -1,7 +1,9 @@
 from django.db import models
+from django.contrib.auth.models import User
 
 
 class Vendeur(models.Model):
+    user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='vendeur', null=True, blank=True)
     nom = models.CharField(max_length=255)
     contact = models.CharField(max_length=255)
 
@@ -27,6 +29,8 @@ class Client(models.Model):
     telephone = models.CharField(max_length=20)
     adresse = models.TextField()
     date_livraison_preferee = models.DateField(blank=True, null=True)
+    facebook_id = models.CharField(max_length=255, blank=True, null=True)
+    tiktok_id = models.CharField(max_length=255, blank=True, null=True)
 
     def __str__(self):
         return self.nom
@@ -57,6 +61,34 @@ class Commande(models.Model):
 
     class Meta:
         ordering = ['date_creation']
+
+    def save(self, *args, **kwargs):
+        is_new = self.pk is None
+        old_status = None
+        if not is_new:
+            try:
+                old_status = Commande.objects.get(pk=self.pk).statut
+            except Commande.DoesNotExist:
+                pass
+
+        super().save(*args, **kwargs)
+
+        # Decrement stock if transitioning to Confirmed
+        if (is_new and self.statut == self.STATUT_CONFIRME) or (old_status != self.STATUT_CONFIRME and self.statut == self.STATUT_CONFIRME):
+            if self.produit.stock > 0:
+                self.produit.stock -= 1
+                self.produit.save()
+
+        # Increment stock if transitioning from Confirmed to Cancelled
+        elif old_status == self.STATUT_CONFIRME and self.statut == self.STATUT_ANNULE:
+            self.produit.stock += 1
+            self.produit.save()
+
+    def delete(self, *args, **kwargs):
+        if self.statut == self.STATUT_CONFIRME:
+            self.produit.stock += 1
+            self.produit.save()
+        super().delete(*args, **kwargs)
 
     def __str__(self):
         return f"Commande #{self.pk} - {self.client.nom} - {self.produit.nom}"
