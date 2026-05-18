@@ -1,4 +1,6 @@
 from django.test import TestCase
+from django.contrib.auth.models import User
+from django.core.files.uploadedfile import SimpleUploadedFile
 
 from .models import Client, Commande, Livraison, Livreur, Paiement, Produit, Vendeur, Message
 
@@ -69,8 +71,10 @@ class BackendAPITest(TestCase):
         response = self.client.get('/api/produits/')
         self.assertEqual(response.status_code, 200)
         data = response.json()
-        self.assertEqual(len(data), 1)
-        self.assertEqual(data[0]['nom'], 'Robe Rouge')
+        # Pagination enabled — results are nested under 'results' key
+        results = data['results']
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]['nom'], 'Robe Rouge')
 
     def test_commande_search_endpoint(self):
         client = Client.objects.create(nom='Serge', telephone='0344455667', adresse='Tananarive')
@@ -79,19 +83,21 @@ class BackendAPITest(TestCase):
         response = self.client.get('/api/commandes/search/', {'q': 'Serge'})
         self.assertEqual(response.status_code, 200)
         data = response.json()
-        self.assertEqual(len(data), 1)
-        self.assertEqual(data[0]['id'], commande.id)
+        # Pagination enabled — results are nested under 'results' key
+        results = data['results']
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]['id'], commande.id)
 
         response = self.client.get('/api/commandes/search/', {'q': 'Robe'})
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(len(response.json()), 1)
+        self.assertEqual(len(response.json()['results']), 1)
 
     def test_jp_relance_endpoint(self):
         client = Client.objects.create(nom='Emilie', telephone='0349988776', adresse='Tana')
         commande = Commande.objects.create(client=client, produit=self.produit, ordre_jp=1)
         Message.objects.create(commande=commande, contenu='Bonjour, merci pour votre JP.', numero_relance=0)
 
-        response = self.client.post('/api/jp-relance/', content_type='application/json')
+        response = self.client.post('/api/jp-relance/', {'force': True}, content_type='application/json')
         self.assertEqual(response.status_code, 200)
         data = response.json()
         self.assertEqual(len(data['relances']), 1)
@@ -135,3 +141,159 @@ class BackendAPITest(TestCase):
         response = self.client.get('/api/livraisons/tracking/', {'commande_id': commande.id})
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()['commande_id'], commande.id)
+
+
+class BackendGapsAPITest(TestCase):
+    def setUp(self):
+        # Create seller and linked User account
+        self.user = User.objects.create_user(username='vendeur_test', password='password123')
+        self.vendeur = Vendeur.objects.create(user=self.user, nom='Vendeur Chic', contact='0341112223')
+        self.produit = Produit.objects.create(
+            nom='Robe Noire', taille='L', couleur='Noir', prix='60000.00', stock=5, photo='', vendeur=self.vendeur
+        )
+
+    def test_stock_lifecycle_on_confirmation(self):
+        client = Client.objects.create(nom='Sahondra', telephone='0345556667', adresse='Tana')
+        commande = Commande.objects.create(client=client, produit=self.produit, statut=Commande.STATUT_JP_CAPTURE)
+
+        # Initially, stock is 5
+        self.assertEqual(self.produit.stock, 5)
+
+        # Confirm command
+        commande.statut = Commande.STATUT_CONFIRME
+        commande.save()
+
+        # Reload product
+        self.produit.refresh_from_db()
+        self.assertEqual(self.produit.stock, 4)
+
+        # Cancel command
+        commande.statut = Commande.STATUT_ANNULE
+        commande.save()
+
+        self.produit.refresh_from_db()
+        self.assertEqual(self.produit.stock, 5)
+
+    def test_facebook_webhook_capture(self):
+        payload = {
+            'sender_facebook_id': 'fb_12345',
+            'sender_name': 'Rabe',
+            'comment_text': 'JP Robe Noire'
+        }
+        response = self.client.post('/api/webhooks/facebook/', payload, content_type='application/json')
+        self.assertEqual(response.status_code, 201)
+
+        # Verify customer linked by facebook_id
+        client = Client.objects.get(facebook_id='fb_12345')
+        self.assertEqual(client.nom, 'Rabe')
+
+        # Verify order priority created
+        self.assertEqual(Commande.objects.filter(client=client).count(), 1)
+
+    def test_tiktok_webhook_capture(self):
+        payload = {
+            'sender_tiktok_id': 'tt_67890',
+            'sender_name': 'Koto',
+            'comment_text': 'JP Robe Noire'
+        }
+        response = self.client.post('/api/webhooks/tiktok/', payload, content_type='application/json')
+        self.assertEqual(response.status_code, 201)
+
+        client = Client.objects.get(tiktok_id='tt_67890')
+        self.assertEqual(client.nom, 'Koto')
+
+    def test_upload_payment_screenshot(self):
+        client = Client.objects.create(nom='Aina', telephone='0341234567', adresse='Tana')
+        commande = Commande.objects.create(client=client, produit=self.produit)
+
+        # Mock image file upload
+        mock_file = SimpleUploadedFile("receipt.png", b"file_content", content_type="image/png")
+
+        response = self.client.post(
+            f'/api/commandes/{commande.id}/upload-paiement/',
+            {'file': mock_file},
+            format='multipart'
+        )
+        self.assertEqual(response.status_code, 200)
+
+        # Verify payment details and automated confirmation
+        commande.refresh_from_db()
+        self.assertEqual(commande.statut, Commande.STATUT_CONFIRME)
+        self.assertEqual(commande.paiement.statut, Paiement.STATUT_PAYE)
+        self.assertEqual(commande.paiement.methode, Paiement.METHODE_MOBILE_MONEY)
+        self.assertIn('receipt', commande.paiement.capture_mobile_money)
+        self.assertTrue(commande.paiement.capture_mobile_money.endswith('.png'))
+
+    def test_thermal_label_generation(self):
+        client = Client.objects.create(nom='Fara', telephone='0339999999', adresse='Tana')
+        commande = Commande.objects.create(client=client, produit=self.produit)
+
+        response = self.client.get(f'/api/commandes/{commande.id}/etiquette-jp/')
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertIn('JP ROBE NOIRE', data['label_text'])
+        self.assertIn('60,000 Ar', data['label_text'])
+
+
+    def test_azexpress_shipping_dispatch(self):
+        client = Client.objects.create(nom='Rina', telephone='0328888888', adresse='Tana')
+        commande = Commande.objects.create(client=client, produit=self.produit)
+
+        response = self.client.post(f'/api/commandes/{commande.id}/lancer-livraison/')
+        self.assertEqual(response.status_code, 200)
+
+        commande.refresh_from_db()
+        self.assertEqual(commande.statut, Commande.STATUT_EN_LIVRAISON)
+        self.assertEqual(commande.livraison.statut, Livraison.STATUT_EN_LIVRAISON)
+        self.assertIn('AZX-', commande.livraison.tracking_notes)
+
+    def test_double_ship_blocked(self):
+        """Bug #5 fix — un deuxième clic sur Lancer Livraison doit retourner 409."""
+        client = Client.objects.create(nom='Tovo', telephone='0321111111', adresse='Tana')
+        commande = Commande.objects.create(client=client, produit=self.produit)
+
+        # Premier envoi
+        r1 = self.client.post(f'/api/commandes/{commande.id}/lancer-livraison/')
+        self.assertEqual(r1.status_code, 200)
+
+        # Deuxième clic — doit être bloqué
+        r2 = self.client.post(f'/api/commandes/{commande.id}/lancer-livraison/')
+        self.assertEqual(r2.status_code, 409)
+        self.assertIn('déjà en statut', r2.json()['detail'])
+
+    def test_dashboard_statistics(self):
+        # Create confirmed orders
+        client1 = Client.objects.create(nom='User 1', telephone='0341', adresse='A')
+        Commande.objects.create(client=client1, produit=self.produit, statut=Commande.STATUT_CONFIRME)
+
+        # Create captured orders
+        client2 = Client.objects.create(nom='User 2', telephone='0342', adresse='B')
+        Commande.objects.create(client=client2, produit=self.produit, statut=Commande.STATUT_JP_CAPTURE)
+
+        # Stats query with vendeur_id (W6 fix — requis si non authentifié)
+        response = self.client.get('/api/dashboard/stats/', {'vendeur_id': self.vendeur.id})
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data['nombre_jps'], 2)
+        self.assertEqual(data['confirmes'], 1)
+        self.assertEqual(data['chiffre_affaires'], 60000.00)
+        self.assertEqual(data['montant_a_reverser'], 54000.00)  # 90% net payout
+
+    def test_dashboard_requires_vendeur_id(self):
+        """W6 fix — le dashboard doit retourner 403 si ni authentifié ni vendeur_id fourni."""
+        response = self.client.get('/api/dashboard/stats/')
+        self.assertEqual(response.status_code, 403)
+
+    def test_client_serializer_exposes_social_ids(self):
+        """W4 fix — les champs facebook_id et tiktok_id doivent apparaître dans l'API."""
+        payload = {
+            'sender_facebook_id': 'fb_audit_test',
+            'sender_name': 'Audit User',
+            'comment_text': 'JP Robe Noire'
+        }
+        response = self.client.post('/api/webhooks/facebook/', payload, content_type='application/json')
+        self.assertEqual(response.status_code, 201)
+        commande_data = response.json()['commande']
+        # Client imbriqué doit exposer facebook_id
+        self.assertIn('facebook_id', commande_data['client'])
+        self.assertEqual(commande_data['client']['facebook_id'], 'fb_audit_test')
