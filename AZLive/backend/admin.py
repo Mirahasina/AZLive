@@ -1,11 +1,12 @@
 from django.contrib import admin
 
-from .models import Client, Commande, Livraison, Livreur, Paiement, Produit, Vendeur, Message
+from .models import Client, Commande, Livraison, Livreur, Paiement, Produit, Vendeur, Message, Collaborateur, Live, Variante
 
 
 @admin.register(Vendeur)
 class VendeurAdmin(admin.ModelAdmin):
-    list_display = ('nom', 'contact')
+    list_display = ('nom', 'contact', 'facebook_page_name', 'tiktok_username', 'is_demo_mode')
+
 
 
 @admin.register(Produit)
@@ -49,3 +50,22 @@ class LivraisonAdmin(admin.ModelAdmin):
 class MessageAdmin(admin.ModelAdmin):
     list_display = ('commande', 'date_envoi', 'numero_relance')
     search_fields = ('commande__client__nom', 'contenu')
+
+
+@admin.register(Collaborateur)
+class CollaborateurAdmin(admin.ModelAdmin):
+    list_display = ('nom', 'role', 'vendeur')
+    list_filter = ('role', 'vendeur')
+
+
+@admin.register(Live)
+class LiveAdmin(admin.ModelAdmin):
+    list_display = ('titre', 'date_live', 'statut', 'vendeur', 'operateur')
+    list_filter = ('statut', 'vendeur')
+
+
+@admin.register(Variante)
+class VarianteAdmin(admin.ModelAdmin):
+    list_display = ('produit', 'taille', 'couleur', 'stock')
+    list_filter = ('taille', 'couleur')
+

@@ -17,6 +17,18 @@ from .views import (
     CommandeEtiquetteJPAPIView,
     CommandeLancerLivraisonAPIView,
     DashboardStatsAPIView,
+    LiveListCreateView,
+    LiveDetailView,
+    CollaborateurListCreateView,
+    CollaborateurDetailView,
+    VarianteListCreateView,
+    VarianteDetailView,
+    ClientListCreateView,
+    ClientDetailView,
+    ClientStatsAPIView,
+    SocialConnectAPIView,
+    SocialDisconnectAPIView,
+    FacebookPagesAPIView,
 )
 from .webhooks import FacebookWebhookView, TikTokWebhookView
 
@@ -26,8 +38,27 @@ urlpatterns = [
 
     # Vendeurs & Produits
     path('vendeurs/', VendeurListCreateView.as_view(), name='vendeur-list-create'),
+    path('vendeurs/connect/', SocialConnectAPIView.as_view(), name='vendeur-social-connect'),
+    path('vendeurs/disconnect/', SocialDisconnectAPIView.as_view(), name='vendeur-social-disconnect'),
+    path('vendeurs/facebook-pages/', FacebookPagesAPIView.as_view(), name='vendeur-facebook-pages'),
+
     path('produits/', ProduitListCreateView.as_view(), name='produit-list-create'),
     path('produits/<int:pk>/', ProduitDetailView.as_view(), name='produit-detail'),
+    path('produits/variants/', VarianteListCreateView.as_view(), name='variante-list-create'),
+    path('produits/variants/<int:pk>/', VarianteDetailView.as_view(), name='variante-detail'),
+
+    # Clients
+    path('clients/', ClientListCreateView.as_view(), name='client-list-create'),
+    path('clients/stats/', ClientStatsAPIView.as_view(), name='client-stats'),
+    path('clients/<int:pk>/', ClientDetailView.as_view(), name='client-detail'),
+
+    # Lives / Sessions
+    path('lives/', LiveListCreateView.as_view(), name='live-list-create'),
+    path('lives/<int:pk>/', LiveDetailView.as_view(), name='live-detail'),
+
+    # Collaborateurs
+    path('collaborateurs/', CollaborateurListCreateView.as_view(), name='collaborateur-list-create'),
+    path('collaborateurs/<int:pk>/', CollaborateurDetailView.as_view(), name='collaborateur-detail'),
 
     # Commandes — routes spécifiques AVANT la route générique <int:pk>/
     path('commandes/', CommandeListCreateView.as_view(), name='commande-list-create'),
@@ -53,3 +84,4 @@ urlpatterns = [
     # Dashboard
     path('dashboard/stats/', DashboardStatsAPIView.as_view(), name='dashboard-stats'),
 ]
+

@@ -9,13 +9,12 @@ class MessagingService:
     @staticmethod
     def send_automatic_message(client, produit, order_id) -> bool:
         """
-        Simulates sending the initial JP message via WhatsApp/Messenger.
+        Simulates sending the initial JP message via WhatsApp/Messenger in Malagasy.
         """
         message_content = (
-            f"Bonjour {client.nom}, merci pour votre JP sur '{produit.nom}'. "
-            f"Merci de confirmer votre commande en répondant avec : nom, téléphone, adresse et date préférée de livraison."
+            f"Salama {client.nom}, nahazo ny JP-nao amin'ny '{produit.nom}' izahay. "
+            f"Mba hafahao ny baikonao amin'ny alalan'ny fandefasana ny: anarana feno, finday, adiresy ary ny daty tianao hanaterana azy."
         )
-        # Log to Django console
         logger.info(f"[SMS/MESSENGER MOCK] Envoyé à {client.telephone or 'Client ID ' + str(client.id)} (Commande #{order_id}) : '{message_content}'")
         print(f"\n [MESSAGING SERVICE] Message envoyé avec succès à {client.nom} ({client.telephone or 'Social Platform'}):")
         print(f"   > '{message_content}'\n")
@@ -24,14 +23,42 @@ class MessagingService:
     @staticmethod
     def send_relance_message(client, produit, numero_relance) -> bool:
         """
-        Simulates sending a follow-up relance message via WhatsApp/Messenger.
+        Simulates sending a follow-up relance message via Messenger in Malagasy.
         """
         message_content = (
-            f"Bonjour {client.nom}, ceci est votre relance n°{numero_relance} "
-            f"pour la commande '{produit.nom}'. Merci de confirmer votre adresse et date de livraison."
+            f"Salama {client.nom}, fampatsiahivana faha-{numero_relance} ity momba ny baikonao '{produit.nom}'. "
+            f"Mba hafahao ny adiresinao sy ny daty hanaterana azy."
         )
         logger.info(f"[SMS/MESSENGER RELANCE MOCK] Relance #{numero_relance} envoyée à {client.telephone or 'Client ID ' + str(client.id)} : '{message_content}'")
         print(f"\n⏰ [MESSAGING SERVICE] Relance #{numero_relance} envoyée à {client.nom} ({client.telephone or 'Social Platform'}):")
+        print(f"   > '{message_content}'\n")
+        return True
+
+    @staticmethod
+    def send_waiting_list_message(client, produit, ordre_jp, order_id) -> bool:
+        """
+        Simulates sending a waiting list notification in Malagasy.
+        """
+        message_content = (
+            f"Salama {client.nom}, tafiditra ao anatin'ny lisitra miandry (liste d'attente) ho an'ny '{produit.nom}' ianao (Laharana faha-{ordre_jp}). "
+            f"Hampilazainay ianao raha misy fahafahana avy amin'ireo nialoha anao."
+        )
+        logger.info(f"[SMS/MESSENGER WAITING MOCK] Envoyé à {client.telephone or 'Client ID ' + str(client.id)} (Commande #{order_id}) : '{message_content}'")
+        print(f"\n [MESSAGING SERVICE] Message de liste d'attente envoyé à {client.nom} ({client.telephone or 'Social Platform'}):")
+        print(f"   > '{message_content}'\n")
+        return True
+
+    @staticmethod
+    def send_promotion_message(client, produit, order_id) -> bool:
+        """
+        Simulates sending a promotion notification in Malagasy.
+        """
+        message_content = (
+            f"Salama {client.nom}, nifindra ho eo amin'ny laharana voalohany (laharana faha-1) ianao izao ho an'ny '{produit.nom}'. "
+            f"Mba hafahao ny baikonao amin'ny alalan'ny fandefasana ny: anarana feno, finday, adiresy ary ny daty tianao hanaterana azy."
+        )
+        logger.info(f"[SMS/MESSENGER PROMOTION MOCK] Envoyé à {client.telephone or 'Client ID ' + str(client.id)} (Commande #{order_id}) : '{message_content}'")
+        print(f"\n [MESSAGING SERVICE] Message de promotion envoyé à {client.nom} ({client.telephone or 'Social Platform'}):")
         print(f"   > '{message_content}'\n")
         return True
 

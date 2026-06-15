@@ -1,14 +1,96 @@
 from django.db import models
 from django.contrib.auth.models import User
+from django.utils import timezone
 
 
 class Vendeur(models.Model):
     user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='vendeur', null=True, blank=True)
     nom = models.CharField(max_length=255)
     contact = models.CharField(max_length=255)
+    facebook_page_id = models.CharField(max_length=255, blank=True, null=True)
+    facebook_page_name = models.CharField(max_length=255, blank=True, null=True)
+    tiktok_username = models.CharField(max_length=255, blank=True, null=True)
+    is_demo_mode = models.BooleanField(default=False)
 
     def __str__(self):
         return self.nom
+
+
+class PageFacebook(models.Model):
+    """Pages Facebook managées par un vendeur, chargées dynamiquement après connexion OAuth."""
+    STATUT_PRET = 'pret'
+    STATUT_INACTIF = 'inactif'
+    STATUT_CHOICES = [
+        (STATUT_PRET, 'Prêt !'),
+        (STATUT_INACTIF, 'Inactif'),
+    ]
+
+    vendeur = models.ForeignKey(Vendeur, on_delete=models.CASCADE, related_name='pages_facebook')
+    page_id = models.CharField(max_length=255)          # ID Facebook Graph API
+    nom = models.CharField(max_length=255)
+    statut = models.CharField(max_length=20, choices=STATUT_CHOICES, default=STATUT_PRET)
+    access_token = models.TextField(blank=True, null=True)  # Token page (stocké chiffré en prod)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = ('vendeur', 'page_id')
+
+    def __str__(self):
+        return f"{self.nom} ({self.vendeur.nom})"
+
+
+class ParametresPlateforme(models.Model):
+    """Paramètres globaux de la plateforme — un seul enregistrement attendu (singleton)."""
+    taux_commission = models.DecimalField(
+        max_digits=5, decimal_places=4, default=0.10,
+        help_text="Taux de commission prélevé par la plateforme (ex: 0.10 = 10%)"
+    )
+    nom_plateforme = models.CharField(max_length=100, default='AZLive')
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = 'Paramètres Plateforme'
+        verbose_name_plural = 'Paramètres Plateforme'
+
+    def __str__(self):
+        return f"Commission: {self.taux_commission * 100:.1f}%"
+
+    @classmethod
+    def get_current(cls):
+        """Retourne les paramètres actifs ou crée les valeurs par défaut."""
+        obj, _ = cls.objects.get_or_create(pk=1)
+        return obj
+
+
+class Collaborateur(models.Model):
+    nom = models.CharField(max_length=255)
+    telephone = models.CharField(max_length=20, blank=True)
+    role = models.CharField(max_length=50, default='operateur')
+    vendeur = models.ForeignKey(Vendeur, on_delete=models.CASCADE, related_name='collaborateurs')
+
+    def __str__(self):
+        return self.nom
+
+
+class Live(models.Model):
+    STATUT_EN_COURS = 'en_cours'
+    STATUT_TERMINE = 'termine'
+
+    STATUT_CHOICES = [
+        (STATUT_EN_COURS, 'En cours'),
+        (STATUT_TERMINE, 'Terminé'),
+    ]
+
+    titre = models.CharField(max_length=255)
+    date_live = models.DateTimeField(default=timezone.now)
+    statut = models.CharField(max_length=50, choices=STATUT_CHOICES, default=STATUT_EN_COURS)
+    vendeur = models.ForeignKey(Vendeur, on_delete=models.CASCADE, related_name='lives')
+    operateur = models.ForeignKey(Collaborateur, on_delete=models.SET_NULL, null=True, blank=True, related_name='lives')
+    produits_dressing = models.ManyToManyField('Produit', blank=True, related_name='lives_dressing')
+    pages_facebook = models.JSONField(default=list, blank=True, null=True)
+
+    def __str__(self):
+        return self.titre
 
 
 class Produit(models.Model):
@@ -19,9 +101,20 @@ class Produit(models.Model):
     stock = models.IntegerField()
     photo = models.CharField(max_length=500, blank=True)
     vendeur = models.ForeignKey(Vendeur, on_delete=models.CASCADE, related_name='produits')
+    code_jp = models.CharField(max_length=50, blank=True, null=True)
 
     def __str__(self):
         return f"{self.nom} ({self.couleur}, {self.taille})"
+
+
+class Variante(models.Model):
+    produit = models.ForeignKey(Produit, on_delete=models.CASCADE, related_name='variantes')
+    taille = models.CharField(max_length=50)
+    couleur = models.CharField(max_length=50)
+    stock = models.IntegerField(default=0)
+
+    def __str__(self):
+        return f"{self.produit.nom} - {self.couleur} - {self.taille}"
 
 
 class Client(models.Model):
@@ -31,6 +124,7 @@ class Client(models.Model):
     date_livraison_preferee = models.DateField(blank=True, null=True)
     facebook_id = models.CharField(max_length=255, blank=True, null=True)
     tiktok_id = models.CharField(max_length=255, blank=True, null=True)
+    social_handle = models.CharField(max_length=255, blank=True, null=True)
 
     def __str__(self):
         return self.nom
@@ -58,9 +152,22 @@ class Commande(models.Model):
     ordre_jp = models.IntegerField(default=1)
     statut = models.CharField(max_length=50, choices=STATUT_CHOICES, default=STATUT_JP_CAPTURE)
     date_creation = models.DateTimeField(auto_now_add=True)
+    live = models.ForeignKey(Live, on_delete=models.SET_NULL, null=True, blank=True, related_name='commandes')
+    variante = models.ForeignKey(Variante, on_delete=models.SET_NULL, null=True, blank=True, related_name='commandes')
 
     class Meta:
         ordering = ['date_creation']
+
+    def _promote_next_in_queue(self):
+        """Checks for the next waiting client for this product and sends a promotion notification."""
+        next_cmd = Commande.objects.filter(
+            produit=self.produit,
+            statut=self.STATUT_JP_CAPTURE
+        ).exclude(pk=self.pk).order_by('ordre_jp').first()
+
+        if next_cmd:
+            from .services import MessagingService
+            MessagingService.send_promotion_message(next_cmd.client, next_cmd.produit, next_cmd.id)
 
     def save(self, *args, **kwargs):
         is_new = self.pk is None
@@ -84,10 +191,15 @@ class Commande(models.Model):
             self.produit.stock += 1
             self.produit.save()
 
+        # Queue Promotion Logic!
+        if not is_new and old_status != self.STATUT_ANNULE and self.statut == self.STATUT_ANNULE:
+            self._promote_next_in_queue()
+
     def delete(self, *args, **kwargs):
         if self.statut == self.STATUT_CONFIRME:
             self.produit.stock += 1
             self.produit.save()
+        self._promote_next_in_queue()
         super().delete(*args, **kwargs)
 
     def __str__(self):
