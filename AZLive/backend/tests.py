@@ -9,7 +9,7 @@ class BackendModelsTest(TestCase):
     def test_create_produit_client_commande(self):
         vendeur = Vendeur.objects.create(nom='Vendeur Live', contact='0341234567')
         produit = Produit.objects.create(
-            nom='Robe Rouge', taille='M', couleur='Rouge', prix='45000.00', stock=10, photo='', vendeur=vendeur
+            nom='Robe Rouge', taille='M', couleur='Rouge', prix='45000.00', stock=10, photo=None, vendeur=vendeur
         )
         client = Client.objects.create(
             nom='Marie', telephone='0349876543', adresse='Antananarivo', date_livraison_preferee='2026-05-20'
@@ -24,7 +24,7 @@ class BackendModelsTest(TestCase):
     def test_paiement_livraison_relations(self):
         vendeur = Vendeur.objects.create(nom='Vendeur Live', contact='0341234567')
         produit = Produit.objects.create(
-            nom='Robe Rouge', taille='M', couleur='Rouge', prix='45000.00', stock=10, photo='', vendeur=vendeur
+            nom='Robe Rouge', taille='M', couleur='Rouge', prix='45000.00', stock=10, photo=None, vendeur=vendeur
         )
         client = Client.objects.create(nom='Jean', telephone='0347654321', adresse='Antananarivo', date_livraison_preferee='2026-05-21')
         commande = Commande.objects.create(client=client, produit=produit, ordre_jp=2)
@@ -47,7 +47,7 @@ class BackendAPITest(TestCase):
     def setUp(self):
         self.vendeur = Vendeur.objects.create(nom='Vendeur Live', contact='0341234567')
         self.produit = Produit.objects.create(
-            nom='Robe Rouge', taille='M', couleur='Rouge', prix='45000.00', stock=10, photo='', vendeur=self.vendeur
+            nom='Robe Rouge', taille='M', couleur='Rouge', prix='45000.00', stock=10, photo=None, vendeur=self.vendeur
         )
 
     def test_jp_capture_endpoint_creates_commande(self):
@@ -149,7 +149,7 @@ class BackendGapsAPITest(TestCase):
         self.user = User.objects.create_user(username='vendeur_test', password='password123')
         self.vendeur = Vendeur.objects.create(user=self.user, nom='Vendeur Chic', contact='0341112223')
         self.produit = Produit.objects.create(
-            nom='Robe Noire', taille='L', couleur='Noir', prix='60000.00', stock=5, photo='', vendeur=self.vendeur
+            nom='Robe Noire', taille='L', couleur='Noir', prix='60000.00', stock=5, photo=None, vendeur=self.vendeur
         )
 
     def test_stock_lifecycle_on_confirmation(self):

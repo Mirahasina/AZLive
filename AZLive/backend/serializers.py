@@ -52,10 +52,19 @@ class ProduitSerializer(serializers.ModelSerializer):
     vendeur = VendeurSerializer(read_only=True)
     vendeur_id = serializers.PrimaryKeyRelatedField(queryset=Vendeur.objects.all(), source='vendeur', write_only=True)
     variantes = VarianteSerializer(many=True, read_only=True)
+    photo_url = serializers.SerializerMethodField()
 
     class Meta:
         model = Produit
-        fields = ['id', 'nom', 'taille', 'couleur', 'prix', 'stock', 'photo', 'vendeur', 'vendeur_id', 'code_jp', 'variantes']
+        fields = ['id', 'nom', 'taille', 'couleur', 'prix', 'stock', 'photo', 'photo_url', 'vendeur', 'vendeur_id', 'code_jp', 'variantes']
+
+    def get_photo_url(self, obj):
+        request = self.context.get('request')
+        if obj.photo and request:
+            return request.build_absolute_uri(obj.photo.url)
+        elif obj.photo:
+            return obj.photo.url
+        return None
 
 
 class LiveSerializer(serializers.ModelSerializer):

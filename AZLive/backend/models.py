@@ -99,7 +99,7 @@ class Produit(models.Model):
     couleur = models.CharField(max_length=50)
     prix = models.DecimalField(max_digits=10, decimal_places=2)
     stock = models.IntegerField()
-    photo = models.CharField(max_length=500, blank=True)
+    photo = models.ImageField(upload_to='produits/', blank=True, null=True)
     vendeur = models.ForeignKey(Vendeur, on_delete=models.CASCADE, related_name='produits')
     code_jp = models.CharField(max_length=50, blank=True, null=True)
 

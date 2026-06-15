@@ -8,7 +8,7 @@ from django.utils import timezone
 from rest_framework import generics, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
-from rest_framework.parsers import MultiPartParser, FormParser
+from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from rest_framework.permissions import IsAuthenticated, AllowAny
 
 from .ai import JPCommentAnalyzer
@@ -38,11 +38,13 @@ class VendeurListCreateView(generics.ListCreateAPIView):
 class ProduitListCreateView(generics.ListCreateAPIView):
     queryset = Produit.objects.all().order_by('id')
     serializer_class = ProduitSerializer
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
 
 
 class ProduitDetailView(generics.RetrieveUpdateDestroyAPIView):
     queryset = Produit.objects.all()
     serializer_class = ProduitSerializer
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
 
 
 class CommandeListCreateView(generics.ListCreateAPIView):
