@@ -12,7 +12,7 @@ from rest_framework.parsers import MultiPartParser, FormParser
 from rest_framework.permissions import IsAuthenticated, AllowAny
 
 from .ai import JPCommentAnalyzer
-from .models import Client, Commande, Livraison, Livreur, Paiement, Produit, Vendeur, Message
+from .models import Client, Commande, Livraison, Livreur, Paiement, Produit, Vendeur, Message, Collaborateur, Live, Variante, PageFacebook, ParametresPlateforme
 from .serializers import (
     ClientSerializer,
     CommandeSerializer,
@@ -22,6 +22,10 @@ from .serializers import (
     ProduitSerializer,
     VendeurSerializer,
     MessageSerializer,
+    CollaborateurSerializer,
+    LiveSerializer,
+    VarianteSerializer,
+    PageFacebookSerializer,
 )
 from .services import MessagingService, AZExpressService
 
@@ -42,8 +46,25 @@ class ProduitDetailView(generics.RetrieveUpdateDestroyAPIView):
 
 
 class CommandeListCreateView(generics.ListCreateAPIView):
-    queryset = Commande.objects.select_related('client', 'produit').all()
     serializer_class = CommandeSerializer
+
+    def get_queryset(self):
+        queryset = Commande.objects.select_related('client', 'produit', 'paiement', 'livraison').all()
+        live_id = self.request.query_params.get('live_id')
+        client_id = self.request.query_params.get('client_id')
+        produit_id = self.request.query_params.get('produit_id')
+        vendeur_id = self.request.query_params.get('vendeur_id')
+
+        if live_id:
+            queryset = queryset.filter(live_id=live_id)
+        if client_id:
+            queryset = queryset.filter(client_id=client_id)
+        if produit_id:
+            queryset = queryset.filter(produit_id=produit_id)
+        if vendeur_id:
+            queryset = queryset.filter(produit__vendeur_id=vendeur_id)
+
+        return queryset
 
 
 class CommandeDetailView(generics.RetrieveUpdateDestroyAPIView):
@@ -81,21 +102,33 @@ class JPCaptureAPIView(APIView):
             },
         )
 
-        max_order = Commande.objects.aggregate(max_ordre=Max('ordre_jp'))['max_ordre'] or 0
+        max_order = Commande.objects.filter(produit=produit).aggregate(max_ordre=Max('ordre_jp'))['max_ordre'] or 0
+        ordre_jp = max_order + 1
         commande = Commande.objects.create(
             client=client,
             produit=produit,
-            ordre_jp=max_order + 1,
+            ordre_jp=ordre_jp,
         )
+
+        if ordre_jp == 1:
+            message_content = self.build_auto_message(client, produit)
+        else:
+            message_content = (
+                f"Salama {client.nom}, tafiditra ao anatin'ny lisitra miandry (liste d'attente) ho an'ny '{produit.nom}' ianao (Laharana faha-{ordre_jp}). "
+                f"Hampilazainay ianao raha misy fahafahana avy amin'ireo nialoha anao."
+            )
 
         message = Message.objects.create(
             commande=commande,
-            contenu=self.build_auto_message(client, produit),
+            contenu=message_content,
             numero_relance=0,
         )
 
-        # Bug #4 fix — envoyer réellement le message via MessagingService
-        MessagingService.send_automatic_message(client, produit, commande.id)
+        # Trigger actual message through MessagingService
+        if ordre_jp == 1:
+            MessagingService.send_automatic_message(client, produit, commande.id)
+        else:
+            MessagingService.send_waiting_list_message(client, produit, ordre_jp, commande.id)
 
         serializer = CommandeSerializer(commande)
         return Response(
@@ -129,21 +162,43 @@ class JPCaptureAPIView(APIView):
 
     def build_auto_message(self, client, produit):
         return (
-            f"Bonjour {client.nom}, merci pour votre JP sur '{produit.nom}'. "
-            "Merci de confirmer votre commande en répondant avec : nom, téléphone, adresse et date préférée de livraison."
+            f"Salama {client.nom}, nahazo ny JP-nao amin'ny '{produit.nom}' izahay. "
+            "Mba hafahao ny baikonao amin'ny alalan'ny fandefasana ny: anarana feno, finday, adiresy ary ny daty tianao hanaterana azy."
         )
 
 
 def _create_jp_commande(client, produit):
     """Utilitaire partagé : crée une commande JP avec ordre atomique (protège contre les race conditions)."""
     with transaction.atomic():
-        max_order = Commande.objects.select_for_update().aggregate(max_ordre=Max('ordre_jp'))['max_ordre'] or 0
-        return Commande.objects.create(
+        max_order = Commande.objects.select_for_update().filter(produit=produit).aggregate(max_ordre=Max('ordre_jp'))['max_ordre'] or 0
+        ordre_jp = max_order + 1
+        commande = Commande.objects.create(
             client=client,
             produit=produit,
-            ordre_jp=max_order + 1,
+            ordre_jp=ordre_jp,
             statut=Commande.STATUT_JP_CAPTURE
         )
+
+        if ordre_jp == 1:
+            message_content = (
+                f"Salama {client.nom}, nahazo ny JP-nao amin'ny '{produit.nom}' izahay. "
+                "Mba hafahao ny baikonao amin'ny alalan'ny fandefasana ny: anarana feno, finday, adiresy ary ny daty tianao hanaterana azy."
+            )
+            MessagingService.send_automatic_message(client, produit, commande.id)
+        else:
+            message_content = (
+                f"Salama {client.nom}, tafiditra ao anatin'ny lisitra miandry (liste d'attente) ho an'ny '{produit.nom}' ianao (Laharana faha-{ordre_jp}). "
+                "Hampilazainay ianao raha misy fahafahana avy amin'ireo nialoha anao."
+            )
+            MessagingService.send_waiting_list_message(client, produit, ordre_jp, commande.id)
+
+        from .models import Message
+        Message.objects.create(
+            commande=commande,
+            contenu=message_content,
+            numero_relance=0
+        )
+        return commande
 
 
 class JPAnalyseAPIView(APIView):
@@ -427,18 +482,26 @@ class DashboardStatsAPIView(APIView):
     def get(self, request):
         vendeur_id = request.query_params.get('vendeur_id')
         commandes_query = Commande.objects.select_related('produit').all()
+        lives_query = Live.objects.all()
+        products_query = Produit.objects.all()
 
         # W6 fix — isolation stricte multi-vendeur
         if request.user.is_authenticated:
             try:
                 vendeur = request.user.vendeur
                 commandes_query = commandes_query.filter(produit__vendeur=vendeur)
+                lives_query = lives_query.filter(vendeur=vendeur)
+                products_query = products_query.filter(vendeur=vendeur)
             except Vendeur.DoesNotExist:
                 # Admin peut voir tout avec vendeur_id explicite
                 if vendeur_id:
                     commandes_query = commandes_query.filter(produit__vendeur_id=vendeur_id)
+                    lives_query = lives_query.filter(vendeur_id=vendeur_id)
+                    products_query = products_query.filter(vendeur_id=vendeur_id)
         elif vendeur_id:
             commandes_query = commandes_query.filter(produit__vendeur_id=vendeur_id)
+            lives_query = lives_query.filter(vendeur_id=vendeur_id)
+            products_query = products_query.filter(vendeur_id=vendeur_id)
         else:
             # Ni authentifié, ni vendeur_id fourni : refus d'accès
             return Response(
@@ -448,29 +511,23 @@ class DashboardStatsAPIView(APIView):
 
         total_jps = commandes_query.count()
 
-        confirmed_count = commandes_query.filter(
+        confirmed_orders = commandes_query.filter(
             statut__in=[
                 Commande.STATUT_CONFIRME,
                 Commande.STATUT_PREPARE,
                 Commande.STATUT_EN_LIVRAISON,
                 Commande.STATUT_LIVRE
             ]
-        ).count()
+        )
+        confirmed_count = confirmed_orders.count()
 
         taux_confirmation = (confirmed_count / total_jps * 100) if total_jps > 0 else 0
 
         # Revenue
-        chiffre_affaires = commandes_query.filter(
-            statut__in=[
-                Commande.STATUT_CONFIRME,
-                Commande.STATUT_PREPARE,
-                Commande.STATUT_EN_LIVRAISON,
-                Commande.STATUT_LIVRE
-            ]
-        ).aggregate(total_revenue=Sum('produit__prix'))['total_revenue'] or 0
+        chiffre_affaires = confirmed_orders.aggregate(total_revenue=Sum('produit__prix'))['total_revenue'] or 0
 
         # Commission and net payout
-        commission_rate = 0.10  # 10% Platform fee
+        commission_rate = float(ParametresPlateforme.get_current().taux_commission)
         montant_a_reverser = float(chiffre_affaires) * (1.0 - commission_rate)
 
         # Top 5 products
@@ -481,12 +538,246 @@ class DashboardStatsAPIView(APIView):
         )
         best_sellers_list = [{'produit_nom': item['produit__nom'], 'ventes': item['total_ventes']} for item in best_sellers]
 
+        # Extra coherent stats fields
+        lives_realises_count = lives_query.filter(statut=Live.STATUT_TERMINE).count()
+        total_stock = products_query.aggregate(s=Sum('stock'))['s'] or 0
+
+        # Monthly chart data
+        months = {
+            1: 'Janvier', 2: 'Février', 3: 'Mars', 4: 'Avril', 5: 'Mai', 6: 'Juin',
+            7: 'Juillet', 8: 'Août', 9: 'Septembre', 10: 'Octobre', 11: 'Novembre', 12: 'Décembre'
+        }
+        monthly_chart_data = []
+        for m_num, m_name in months.items():
+            revenue = confirmed_orders.filter(date_creation__month=m_num).aggregate(r=Sum('produit__prix'))['r'] or 0
+            monthly_chart_data.append({
+                'mois': m_name,
+                'chiffre_affaires': float(revenue)
+            })
+
+        # Best sellers ranking with extra details
+        best_sellers_ranking = []
+        best_sellers_query = (
+            confirmed_orders.values('produit_id')
+            .annotate(units_sold=Count('id'))
+            .order_by('-units_sold')[:5]
+        )
+        for index, item in enumerate(best_sellers_query, start=1):
+            prod = Produit.objects.filter(id=item['produit_id']).first()
+            if prod:
+                best_sellers_ranking.append({
+                    'rang': index,
+                    'produit_nom': prod.nom,
+                    'code_jp': prod.code_jp or f"JP{prod.id}",
+                    'prix_unitaire': float(prod.prix),
+                    'unites_vendues': item['units_sold'],
+                    'stock_restant': prod.stock,
+                    'revenus_cumules': float(prod.prix * item['units_sold'])
+                })
+
         return Response({
+            'chiffre_affaires': float(chiffre_affaires),
+            'articles_vendus': confirmed_count,
+            'lives_realises': lives_realises_count,
+            'articles_en_stock': total_stock,
+            'monthly_chart_data': monthly_chart_data,
+            'best_sellers_ranking': best_sellers_ranking,
+            # keeping old fields for backward compatibility/tests
             'nombre_jps': total_jps,
             'confirmes': confirmed_count,
             'taux_confirmation': round(taux_confirmation, 2),
-            'chiffre_affaires': float(chiffre_affaires),
             'montant_a_reverser': round(montant_a_reverser, 2),
             'commission_plateforme': round(float(chiffre_affaires) * commission_rate, 2),
             'produits_les_plus_vendus': best_sellers_list
         }, status=status.HTTP_200_OK)
+
+
+class LiveListCreateView(generics.ListCreateAPIView):
+    queryset = Live.objects.all().order_by('-date_live')
+    serializer_class = LiveSerializer
+    permission_classes = [AllowAny]
+
+
+class LiveDetailView(generics.RetrieveUpdateDestroyAPIView):
+    queryset = Live.objects.all()
+    serializer_class = LiveSerializer
+    permission_classes = [AllowAny]
+
+
+class CollaborateurListCreateView(generics.ListCreateAPIView):
+    queryset = Collaborateur.objects.all().order_by('nom')
+    serializer_class = CollaborateurSerializer
+    permission_classes = [AllowAny]
+
+
+class CollaborateurDetailView(generics.RetrieveUpdateDestroyAPIView):
+    queryset = Collaborateur.objects.all()
+    serializer_class = CollaborateurSerializer
+    permission_classes = [AllowAny]
+
+
+class VarianteListCreateView(generics.ListCreateAPIView):
+    queryset = Variante.objects.all()
+    serializer_class = VarianteSerializer
+    permission_classes = [AllowAny]
+
+
+class VarianteDetailView(generics.RetrieveUpdateDestroyAPIView):
+    queryset = Variante.objects.all()
+    serializer_class = VarianteSerializer
+    permission_classes = [AllowAny]
+
+
+class ClientListCreateView(generics.ListCreateAPIView):
+    queryset = Client.objects.all().order_by('nom')
+    serializer_class = ClientSerializer
+    permission_classes = [AllowAny]
+
+
+class ClientDetailView(generics.RetrieveUpdateDestroyAPIView):
+    queryset = Client.objects.all()
+    serializer_class = ClientSerializer
+    permission_classes = [AllowAny]
+
+
+class ClientStatsAPIView(APIView):
+    permission_classes = [AllowAny]
+
+    def get(self, request):
+        vendeur_id = request.query_params.get('vendeur_id')
+        clients_query = Client.objects.all()
+        commandes_query = Commande.objects.filter(
+            statut__in=[
+                Commande.STATUT_CONFIRME,
+                Commande.STATUT_PREPARE,
+                Commande.STATUT_EN_LIVRAISON,
+                Commande.STATUT_LIVRE
+            ]
+        )
+
+        if request.user.is_authenticated:
+            try:
+                vendeur = request.user.vendeur
+                commandes_query = commandes_query.filter(produit__vendeur=vendeur)
+                clients_query = Client.objects.filter(commandes__produit__vendeur=vendeur).distinct()
+            except Vendeur.DoesNotExist:
+                if vendeur_id:
+                    commandes_query = commandes_query.filter(produit__vendeur_id=vendeur_id)
+                    clients_query = Client.objects.filter(commandes__produit__vendeur_id=vendeur_id).distinct()
+        elif vendeur_id:
+            commandes_query = commandes_query.filter(produit__vendeur_id=vendeur_id)
+            clients_query = Client.objects.filter(commandes__produit__vendeur_id=vendeur_id).distinct()
+
+        total_clients = clients_query.count()
+
+        # Prix moyen par commande
+        avg_order_price = commandes_query.aggregate(avg_price=models.Avg('produit__prix'))['avg_price'] or 0
+
+        # Fidélité (nombre de clients avec >= 2 commandes validées)
+        client_order_counts = (
+            commandes_query.values('client')
+            .annotate(cnt=Count('id'))
+            .filter(cnt__gte=2)
+        )
+        fideles_count = client_order_counts.count()
+        taux_fidelite = (fideles_count / total_clients * 100) if total_clients > 0 else 0
+
+        return Response({
+            'nombre_clients': total_clients,
+            'prix_moyen_commande': round(float(avg_order_price), 2),
+            'taux_fidelite': round(taux_fidelite, 2),
+            'clients_fideles_count': fideles_count
+        }, status=status.HTTP_200_OK)
+
+
+class SocialConnectAPIView(APIView):
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        vendeur_id = request.data.get('vendeur_id')
+        platform = request.data.get('platform')
+
+        if not vendeur_id:
+            return Response({'detail': 'Le champ vendeur_id est requis.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        vendeur = get_object_or_404(Vendeur, id=vendeur_id)
+
+        if platform == 'facebook':
+            vendeur.facebook_page_id = request.data.get('facebook_page_id', 'fb_page_123456789')
+            vendeur.facebook_page_name = request.data.get('facebook_page_name', 'Ma Boutique Facebook Officielle')
+            vendeur.is_demo_mode = False
+
+            # Dynamically seed Facebook pages in the DB for this seller
+            pages_to_create = [
+                {'page_id': 'fb_page_123', 'nom': 'AZLive Fashion'},
+                {'page_id': 'fb_page_456', 'nom': 'Boutique Chic Madagascar'},
+                {'page_id': 'fb_page_789', 'nom': 'Tana Dressing Hub'},
+                {'page_id': 'fb_page_999', 'nom': "L'armoire des Princesses"},
+            ]
+            for p in pages_to_create:
+                PageFacebook.objects.get_or_create(
+                    vendeur=vendeur,
+                    page_id=p['page_id'],
+                    defaults={'nom': p['nom'], 'statut': PageFacebook.STATUT_PRET}
+                )
+        elif platform == 'tiktok':
+            vendeur.tiktok_username = request.data.get('tiktok_username', '@maboutique_tiktok')
+            vendeur.is_demo_mode = False
+        elif platform == 'demo':
+            vendeur.is_demo_mode = True
+            vendeur.facebook_page_id = None
+            vendeur.facebook_page_name = None
+            vendeur.tiktok_username = None
+        else:
+            return Response({'detail': 'Plateforme invalide.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        vendeur.save()
+        return Response(VendeurSerializer(vendeur).data, status=status.HTTP_200_OK)
+
+
+class SocialDisconnectAPIView(APIView):
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        vendeur_id = request.data.get('vendeur_id')
+        platform = request.data.get('platform')
+
+        if not vendeur_id:
+            return Response({'detail': 'Le champ vendeur_id est requis.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        vendeur = get_object_or_404(Vendeur, id=vendeur_id)
+
+        if platform == 'facebook' or platform == 'all':
+            vendeur.facebook_page_id = None
+            vendeur.facebook_page_name = None
+            # Also clear stored pages for clean dynamic behavior
+            vendeur.pages_facebook.all().delete()
+        if platform == 'tiktok' or platform == 'all':
+            vendeur.tiktok_username = None
+        if platform == 'demo' or platform == 'all':
+            vendeur.is_demo_mode = False
+
+        vendeur.save()
+        return Response(VendeurSerializer(vendeur).data, status=status.HTTP_200_OK)
+
+
+class FacebookPagesAPIView(APIView):
+    permission_classes = [AllowAny]
+
+    def get(self, request):
+        vendeur_id = request.query_params.get('vendeur_id')
+        if not vendeur_id and request.user.is_authenticated:
+            try:
+                vendeur_id = request.user.vendeur.id
+            except Vendeur.DoesNotExist:
+                pass
+
+        if vendeur_id:
+            pages = PageFacebook.objects.filter(vendeur_id=vendeur_id)
+        else:
+            pages = PageFacebook.objects.all()
+
+        serializer = PageFacebookSerializer(pages, many=True)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+

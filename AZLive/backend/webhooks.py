@@ -14,6 +14,21 @@ from .views import _create_jp_commande
 class FacebookWebhookView(APIView):
     permission_classes = [AllowAny]
 
+    def get(self, request):
+        # Verification flow for Facebook Webhook setup
+        mode = request.query_params.get('hub.mode')
+        token = request.query_params.get('hub.verify_token')
+        challenge = request.query_params.get('hub.challenge')
+
+        # Use token: 'azlive_secure_webhook_token_2026'
+        verify_token = 'azlive_secure_webhook_token_2026'
+
+        if mode == 'subscribe' and token == verify_token:
+            from django.http import HttpResponse
+            return HttpResponse(challenge, content_type="text/plain")
+        
+        return Response({'detail': 'Token de vérification invalide.'}, status=status.HTTP_403_FORBIDDEN)
+
     def post(self, request):
         sender_facebook_id = request.data.get('sender_facebook_id')
         sender_name = request.data.get('sender_name', 'Client Facebook')
@@ -62,21 +77,8 @@ class FacebookWebhookView(APIView):
             client.nom = sender_name
             client.save()
 
-        # Step 4: Create order atomically (Bug #3 fix — race condition protection)
+        # Step 4: Create order atomically and dispatch notifications inside _create_jp_commande
         commande = _create_jp_commande(client, produit)
-
-        # Step 5: Save message to DB and simulate dispatch
-        message_content = (
-            f"Bonjour {client.nom}, merci pour votre JP sur '{produit.nom}'. "
-            f"Merci de confirmer votre commande en répondant avec : nom, téléphone, adresse et date préférée de livraison."
-        )
-        Message.objects.create(
-            commande=commande,
-            contenu=message_content,
-            numero_relance=0
-        )
-        
-        MessagingService.send_automatic_message(client, produit, commande.id)
 
         serializer = CommandeSerializer(commande)
         return Response({
@@ -139,21 +141,8 @@ class TikTokWebhookView(APIView):
             client.nom = sender_name
             client.save()
 
-        # Step 4: Create order atomically (Bug #3 fix — race condition protection)
+        # Step 4: Create order atomically and dispatch notifications inside _create_jp_commande
         commande = _create_jp_commande(client, produit)
-
-        # Step 5: Save message to DB and simulate dispatch
-        message_content = (
-            f"Bonjour {client.nom}, merci pour votre JP sur '{produit.nom}'. "
-            f"Merci de confirmer votre commande en répondant avec : nom, téléphone, adresse et date préférée de livraison."
-        )
-        Message.objects.create(
-            commande=commande,
-            contenu=message_content,
-            numero_relance=0
-        )
-        
-        MessagingService.send_automatic_message(client, produit, commande.id)
 
         serializer = CommandeSerializer(commande)
         return Response({

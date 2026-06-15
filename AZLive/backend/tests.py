@@ -297,3 +297,145 @@ class BackendGapsAPITest(TestCase):
         # Client imbriqué doit exposer facebook_id
         self.assertIn('facebook_id', commande_data['client'])
         self.assertEqual(commande_data['client']['facebook_id'], 'fb_audit_test')
+
+    def test_social_connect_disconnect_endpoints(self):
+        # Initial status: not connected
+        self.assertFalse(self.vendeur.is_demo_mode)
+        self.assertIsNone(self.vendeur.facebook_page_id)
+
+        # Connect Facebook
+        payload = {'vendeur_id': self.vendeur.id, 'platform': 'facebook'}
+        response = self.client.post('/api/vendeurs/connect/', payload, content_type='application/json')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()['facebook_page_id'], 'fb_page_123456789')
+        self.assertEqual(response.json()['facebook_page_name'], 'Ma Boutique Facebook Officielle')
+
+        # Connect Demo
+        payload = {'vendeur_id': self.vendeur.id, 'platform': 'demo'}
+        response = self.client.post('/api/vendeurs/connect/', payload, content_type='application/json')
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()['is_demo_mode'])
+        self.assertIsNone(response.json()['facebook_page_id'])
+
+        # Disconnect All
+        payload = {'vendeur_id': self.vendeur.id, 'platform': 'all'}
+        response = self.client.post('/api/vendeurs/disconnect/', payload, content_type='application/json')
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(response.json()['is_demo_mode'])
+
+    def test_live_session_endpoints(self):
+        from .models import Live, Collaborateur
+        collab = Collaborateur.objects.create(nom='Clare Michel', role='operateur', vendeur=self.vendeur)
+        live = Live.objects.create(titre="Dressing d'Hiver Premium Antsirabe", vendeur=self.vendeur, operateur=collab)
+
+        response = self.client.get('/api/lives/')
+        self.assertEqual(response.status_code, 200)
+        # Paginated results
+        results = response.json()['results']
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]['titre'], "Dressing d'Hiver Premium Antsirabe")
+        self.assertEqual(results[0]['operateur_nom'], 'Clare Michel')
+
+    def test_product_variants_endpoints(self):
+        from .models import Variante
+        variant = Variante.objects.create(produit=self.produit, taille='M', couleur='Noir', stock=2)
+
+        response = self.client.get(f'/api/produits/{self.produit.id}/')
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(len(data['variantes']), 1)
+        self.assertEqual(data['variantes'][0]['taille'], 'M')
+        self.assertEqual(data['variantes'][0]['stock'], 2)
+
+    def test_client_stats_and_fidelity_endpoints(self):
+        client = Client.objects.create(nom='Faratiana Rabe', telephone='0342255588', social_handle='@fara_rabe')
+        
+        # Test client list has computed fields
+        response = self.client.get('/api/clients/')
+        self.assertEqual(response.status_code, 200)
+        results = response.json()['results']
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]['social_handle'], '@fara_rabe')
+        self.assertEqual(results[0]['sessions_count'], 0)
+
+        # Confirm 2 orders for client to make them loyal
+        from .models import Commande
+        Commande.objects.create(client=client, produit=self.produit, statut=Commande.STATUT_CONFIRME)
+        Commande.objects.create(client=client, produit=self.produit, statut=Commande.STATUT_CONFIRME)
+
+        # Get client stats
+        response = self.client.get('/api/clients/stats/', {'vendeur_id': self.vendeur.id})
+        self.assertEqual(response.status_code, 200)
+        stats = response.json()
+        self.assertEqual(stats['nombre_clients'], 1)
+        self.assertEqual(stats['clients_fideles_count'], 1)
+        self.assertEqual(stats['taux_fidelite'], 100.0)
+
+    def test_facebook_pages_list(self):
+        payload = {'vendeur_id': self.vendeur.id, 'platform': 'facebook'}
+        self.client.post('/api/vendeurs/connect/', payload, content_type='application/json')
+
+        response = self.client.get('/api/vendeurs/facebook-pages/', {'vendeur_id': self.vendeur.id})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.json()), 4)
+        self.assertEqual(response.json()[0]['nom'], 'AZLive Fashion')
+
+    def test_live_dressing_association(self):
+        from .models import Live
+        live = Live.objects.create(titre="Live test dressing", vendeur=self.vendeur)
+
+        payload = {
+            'produits_dressing_ids': [self.produit.id],
+            'pages_facebook': ['AZLive Fashion', 'Boutique Chic Madagascar']
+        }
+        response = self.client.patch(f'/api/lives/{live.id}/', payload, content_type='application/json')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.json()['produits_dressing']), 1)
+        self.assertEqual(response.json()['produits_dressing'][0]['id'], self.produit.id)
+        self.assertEqual(response.json()['pages_facebook'], ['AZLive Fashion', 'Boutique Chic Madagascar'])
+
+    def test_malagasy_queue_promotion_logic(self):
+        from .models import Client, Commande
+        client_a = Client.objects.create(nom='Aina', telephone='0341122334')
+        client_b = Client.objects.create(nom='Bodo', telephone='0321122334')
+        client_c = Client.objects.create(nom='Chantal', telephone='0334455667')
+
+        # First client orders -> Should go to first priority (ordre_jp = 1)
+        response_a = self.client.post('/api/jp-capture/', {
+            'comment_text': f"JP {self.produit.nom}",
+            'telephone': client_a.telephone,
+            'nom': client_a.nom
+        }, content_type='application/json')
+        self.assertEqual(response_a.status_code, 201)
+        self.assertEqual(response_a.json()['commande']['ordre_jp'], 1)
+        self.assertIn("nahazo ny JP-nao amin'ny", response_a.json()['message_envoye'])
+
+        # Second client orders -> Should go to waiting list (ordre_jp = 2)
+        response_b = self.client.post('/api/jp-capture/', {
+            'comment_text': f"JP {self.produit.nom}",
+            'telephone': client_b.telephone,
+            'nom': client_b.nom
+        }, content_type='application/json')
+        self.assertEqual(response_b.status_code, 201)
+        self.assertEqual(response_b.json()['commande']['ordre_jp'], 2)
+        self.assertIn("lisitra miandry", response_b.json()['message_envoye'])
+
+        # Third client orders -> Should go to waiting list (ordre_jp = 3)
+        response_c = self.client.post('/api/jp-capture/', {
+            'comment_text': f"JP {self.produit.nom}",
+            'telephone': client_c.telephone,
+            'nom': client_c.nom
+        }, content_type='application/json')
+        self.assertEqual(response_c.status_code, 201)
+        self.assertEqual(response_c.json()['commande']['ordre_jp'], 3)
+
+        # Cancel the first command -> Should trigger promotion of the second command (client_b)
+        cmd_a = Commande.objects.get(id=response_a.json()['commande']['id'])
+        cmd_a.statut = Commande.STATUT_ANNULE
+        cmd_a.save()
+        
+        # Delete the second command -> Should trigger promotion of the third command (client_c)
+        cmd_b = Commande.objects.get(id=response_b.json()['commande']['id'])
+        cmd_b.delete()
+
+
