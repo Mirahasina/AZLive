@@ -147,7 +147,7 @@ REST_FRAMEWORK = {
     'PAGE_SIZE': 50,
 }
 
-MEDIA_URL = 'media/'
-MEDIA_ROOT = BASE_DIR / 'media'
+MEDIA_URL = ''
+MEDIA_ROOT = ''
 
 CORS_ALLOW_ALL_ORIGINS = True
