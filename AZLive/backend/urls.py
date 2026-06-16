@@ -16,6 +16,9 @@ from .views import (
     VendeurListCreateView,
     CommandeUploadPaiementAPIView,
     CommandeEtiquetteJPAPIView,
+    CommandeFacturePDFView,
+    CommandeEtiquetteLivraisonPDFView,
+    CommandeConfirmerAPIView,
     CommandeLancerLivraisonAPIView,
     DashboardStatsAPIView,
     LiveListCreateView,
@@ -38,6 +41,9 @@ from .auth_views import (
     FacebookSubscribeWebhooksAPIView,
     FacebookSyncPagesAPIView,
     FacebookTokenLoginAPIView,
+    TikTokCallbackAPIView,
+    TikTokLoginURLAPIView,
+    TikTokTokenLoginAPIView,
 )
 from .webhooks import FacebookWebhookView, TikTokWebhookView
 from .live_views import LiveDemarrerAPIView, LiveArreterAPIView
@@ -51,6 +57,9 @@ urlpatterns = [
     path('auth/facebook/token/', FacebookTokenLoginAPIView.as_view(), name='auth-facebook-token'),
     path('auth/facebook/sync-pages/', FacebookSyncPagesAPIView.as_view(), name='auth-facebook-sync-pages'),
     path('auth/facebook/subscribe-webhooks/', FacebookSubscribeWebhooksAPIView.as_view(), name='auth-facebook-subscribe-webhooks'),
+    path('auth/tiktok/login/', TikTokLoginURLAPIView.as_view(), name='auth-tiktok-login'),
+    path('auth/tiktok/callback/', TikTokCallbackAPIView.as_view(), name='auth-tiktok-callback'),
+    path('auth/tiktok/token/', TikTokTokenLoginAPIView.as_view(), name='auth-tiktok-token'),
 
     # Vendeurs & Produits
     path('vendeurs/', VendeurListCreateView.as_view(), name='vendeur-list-create'),
@@ -84,6 +93,9 @@ urlpatterns = [
     path('commandes/search/', CommandeSearchAPIView.as_view(), name='commande-search'),
     path('commandes/<int:pk>/upload-paiement/', CommandeUploadPaiementAPIView.as_view(), name='commande-upload-paiement'),
     path('commandes/<int:pk>/etiquette-jp/', CommandeEtiquetteJPAPIView.as_view(), name='commande-etiquette-jp'),
+    path('commandes/<int:pk>/facture.pdf', CommandeFacturePDFView.as_view(), name='commande-facture-pdf'),
+    path('commandes/<int:pk>/etiquette-livraison.pdf', CommandeEtiquetteLivraisonPDFView.as_view(), name='commande-etiquette-livraison-pdf'),
+    path('commandes/<int:pk>/confirmer/', CommandeConfirmerAPIView.as_view(), name='commande-confirmer'),
     path('commandes/<int:pk>/lancer-livraison/', CommandeLancerLivraisonAPIView.as_view(), name='commande-lancer-livraison'),
     path('commandes/<int:commande_id>/ticket/', TicketAPIView.as_view(), name='commande-ticket'),
     path('commandes/<int:pk>/', CommandeDetailView.as_view(), name='commande-detail'),

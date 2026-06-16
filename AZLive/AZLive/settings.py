@@ -18,6 +18,25 @@ from pathlib import Path
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 
+def _load_dotenv(path: Path) -> None:
+    """Load KEY=VALUE pairs from .env (does not override existing env vars)."""
+    if not path.is_file():
+        return
+    for line in path.read_text(encoding='utf-8').splitlines():
+        line = line.strip()
+        if not line or line.startswith('#') or '=' not in line:
+            continue
+        key, _, value = line.partition('=')
+        key, value = key.strip(), value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in '"\'':
+            value = value[1:-1]
+        if key not in os.environ or not os.environ[key]:
+            os.environ[key] = value
+
+
+_load_dotenv(BASE_DIR / '.env')
+
+
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/5.2/howto/deployment/checklist/
 
@@ -79,24 +98,22 @@ WSGI_APPLICATION = 'AZLive.wsgi.application'
 # Database
 # https://docs.djangoproject.com/en/5.2/ref/settings/#databases
 
-USE_POSTGRES = os.environ.get('AZLIVE_USE_POSTGRES', 'False').lower() in ('1', 'true', 'yes')
-
-DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.postgresql',
-        'NAME': os.environ.get('POSTGRES_DB', 'AZLive'),
-        'USER': os.environ.get('POSTGRES_USER', 'postgres'),
-        'PASSWORD': os.environ.get('POSTGRES_PASSWORD', 'ando2386'),
-        'HOST': os.environ.get('POSTGRES_HOST', 'localhost'),
-        'PORT': os.environ.get('POSTGRES_PORT', '5432'),
-    }
-}
-
 if 'test' in sys.argv:
     DATABASES = {
         'default': {
             'ENGINE': 'django.db.backends.sqlite3',
             'NAME': ':memory:',
+        }
+    }
+else:
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.postgresql',
+            'NAME': os.environ.get('POSTGRES_DB', 'AZLive'),
+            'USER': os.environ.get('POSTGRES_USER', 'postgres'),
+            'PASSWORD': os.environ.get('POSTGRES_PASSWORD', ''),
+            'HOST': os.environ.get('POSTGRES_HOST', 'localhost'),
+            'PORT': os.environ.get('POSTGRES_PORT', '5432'),
         }
     }
 
@@ -173,7 +190,7 @@ FACEBOOK_LOGIN_SUCCESS_URL = os.environ.get(
 )
 FACEBOOK_OAUTH_SCOPES = os.environ.get(
     'FACEBOOK_OAUTH_SCOPES',
-    'email,public_profile,pages_show_list,pages_read_engagement,pages_manage_metadata,pages_manage_posts',
+    'email,public_profile,pages_show_list,pages_read_engagement,pages_manage_metadata,pages_manage_posts,pages_messaging',
 )
 FACEBOOK_LIVE_STATUS = os.environ.get('FACEBOOK_LIVE_STATUS', 'LIVE_NOW')
 FACEBOOK_WEBHOOK_VERIFY_TOKEN = os.environ.get(
@@ -182,5 +199,30 @@ FACEBOOK_WEBHOOK_VERIFY_TOKEN = os.environ.get(
 )
 FACEBOOK_WEBHOOK_FIELDS = os.environ.get(
     'FACEBOOK_WEBHOOK_FIELDS',
-    'feed',
+    'feed,messages',
 )
+
+# URL publique de l'API (liens facture / étiquette dans les messages privés)
+AZLIVE_PUBLIC_BASE_URL = os.environ.get('AZLIVE_PUBLIC_BASE_URL', 'http://localhost:8000')
+
+# TikTok OAuth (Login Kit) — Sandbox ou Production
+TIKTOK_CLIENT_KEY = os.environ.get('TIKTOK_CLIENT_KEY', '')
+TIKTOK_CLIENT_SECRET = os.environ.get('TIKTOK_CLIENT_SECRET', '')
+TIKTOK_REDIRECT_URI = os.environ.get(
+    'TIKTOK_REDIRECT_URI',
+    'https://limacine-adrian-sighted.ngrok-free.dev/api/auth/tiktok/callback/',
+)
+TIKTOK_LOGIN_SUCCESS_URL = os.environ.get(
+    'TIKTOK_LOGIN_SUCCESS_URL',
+    'http://localhost:3000/auth/tiktok/success',
+)
+TIKTOK_OAUTH_SCOPES = os.environ.get('TIKTOK_OAUTH_SCOPES', 'user.info.basic')
+
+# TikTools — commentaires live TikTok en temps réel
+TIKTOOL_API_KEY = os.environ.get('TIKTOOL_API_KEY', '')
+
+_extra_hosts = os.environ.get('DJANGO_EXTRA_ALLOWED_HOSTS', '')
+if _extra_hosts:
+    ALLOWED_HOSTS = ['*'] if ALLOWED_HOSTS == ['*'] else ALLOWED_HOSTS + [
+        host.strip() for host in _extra_hosts.split(',') if host.strip()
+    ]

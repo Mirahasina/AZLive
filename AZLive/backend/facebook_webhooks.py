@@ -7,6 +7,7 @@ from django.conf import settings
 
 from .facebook_oauth import FacebookOAuthError, _graph_request
 from .jp_capture import JPCaptureError, process_social_comment
+from .order_confirmation import OrderConfirmationError, process_inbound_private_message
 
 
 def verify_webhook_signature(raw_body: bytes, signature_header: str | None) -> bool:
@@ -55,6 +56,31 @@ def extract_facebook_comments(payload: dict[str, Any]) -> list[dict[str, Any]]:
     return comments
 
 
+def extract_facebook_messaging_events(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    if payload.get('object') != 'page':
+        return []
+
+    events = []
+    for entry in payload.get('entry', []):
+        page_id = str(entry.get('id', ''))
+        for item in entry.get('messaging', []):
+            message = item.get('message') or {}
+            text = message.get('text') or ''
+            if not text or message.get('is_echo'):
+                continue
+            sender_id = str((item.get('sender') or {}).get('id', ''))
+            if not sender_id:
+                continue
+            events.append(
+                {
+                    'page_id': page_id,
+                    'sender_facebook_id': sender_id,
+                    'message_text': text,
+                }
+            )
+    return events
+
+
 def is_legacy_facebook_payload(payload: dict[str, Any]) -> bool:
     return bool(payload.get('sender_facebook_id') and payload.get('comment_text'))
 
@@ -71,6 +97,24 @@ def process_facebook_webhook_payload(payload: dict[str, Any]) -> dict[str, Any]:
         )
         status_code = 201 if result.get('status') != 'ignored' else 200
         return {'status_code': status_code, 'results': [result]}
+
+    messaging_events = extract_facebook_messaging_events(payload)
+    if messaging_events:
+        results = []
+        for event in messaging_events:
+            try:
+                result = process_inbound_private_message(
+                    sender_id=event['sender_facebook_id'],
+                    message_text=event['message_text'],
+                    channel='Facebook',
+                    page_id=event.get('page_id'),
+                    id_field='facebook_id',
+                )
+                results.append(result)
+            except OrderConfirmationError as exc:
+                results.append({'status': 'error', 'detail': exc.message, **exc.payload})
+        confirmed = any(r.get('status') == 'Commande confirmée' for r in results)
+        return {'status_code': 201 if confirmed else 200, 'results': results}
 
     comments = extract_facebook_comments(payload)
     if not comments:

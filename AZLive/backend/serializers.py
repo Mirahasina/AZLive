@@ -331,6 +331,7 @@ class ClientSerializer(serializers.ModelSerializer):
             'telephone',
             'adresse',
             'date_livraison_preferee',
+            'heure_livraison_preferee',
             'facebook_id',
             'tiktok_id',
             'social_handle',

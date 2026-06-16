@@ -32,6 +32,13 @@ from .services import MessagingService, AZExpressService
 from .facebook_oauth import FacebookOAuthError, facebook_configured, sync_vendeur_pages
 from .jp_capture import create_jp_commande
 from .live_service import arreter_live, demarrer_live
+from .documents import build_etiquette_livraison_pdf, build_facture_pdf, pdf_response
+from .order_confirmation import (
+    OrderConfirmationError,
+    analyze_confirmation_message,
+    handle_client_reply,
+    process_inbound_private_message,
+)
 
 
 def _commande_variante(commande):
@@ -453,6 +460,84 @@ class CommandeEtiquetteJPAPIView(APIView):
         return Response(ticket_data, status=status.HTTP_200_OK)
 
 
+class CommandeFacturePDFView(APIView):
+    permission_classes = [AllowAny]
+
+    def get(self, request, pk):
+        commande = get_object_or_404(
+            Commande.objects.select_related('client', 'produit', 'variante'),
+            pk=pk,
+        )
+        pdf_bytes = build_facture_pdf(commande)
+        return pdf_response(pdf_bytes, f'facture_commande_{commande.id}.pdf')
+
+
+class CommandeEtiquetteLivraisonPDFView(APIView):
+    permission_classes = [AllowAny]
+
+    def get(self, request, pk):
+        commande = get_object_or_404(
+            Commande.objects.select_related('client', 'produit', 'variante'),
+            pk=pk,
+        )
+        pdf_bytes = build_etiquette_livraison_pdf(commande)
+        return pdf_response(pdf_bytes, f'etiquette_commande_{commande.id}.pdf')
+
+
+class CommandeConfirmerAPIView(APIView):
+    permission_classes = [AllowAny]
+    parser_classes = [JSONParser, FormParser]
+
+    def post(self, request, pk):
+        commande = get_object_or_404(
+            Commande.objects.select_related('client', 'produit', 'variante', 'live'),
+            pk=pk,
+        )
+
+        if request.data.get('message_text'):
+            try:
+                channel = request.data.get('channel', 'Manuel')
+                id_field = 'tiktok_id' if channel == 'TikTok' else 'facebook_id'
+                sender_id = request.data.get('sender_id') or getattr(commande.client, id_field, None)
+                if not sender_id:
+                    return Response(
+                        {'detail': f'Identifiant client {id_field} manquant pour cette commande.'},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                result = process_inbound_private_message(
+                    sender_id=str(sender_id),
+                    message_text=request.data['message_text'],
+                    channel=channel,
+                    page_id=request.data.get('page_id'),
+                    id_field=id_field,
+                )
+                return Response(result, status=status.HTTP_200_OK)
+            except OrderConfirmationError as exc:
+                return Response({'detail': exc.message, **exc.payload}, status=exc.status_code)
+
+        parsed = analyze_confirmation_message(
+            request.data.get('message_text', ''),
+            client=commande.client,
+        )
+        if not parsed:
+            parsed = {
+                key: request.data[key]
+                for key in ('nom', 'telephone', 'adresse', 'date_livraison', 'heure_livraison')
+                if request.data.get(key)
+            }
+
+        try:
+            result = handle_client_reply(
+                commande,
+                parsed,
+                inbound_text=request.data.get('message_text', ''),
+                canal=request.data.get('channel'),
+            )
+            return Response(result, status=status.HTTP_200_OK)
+        except OrderConfirmationError as exc:
+            return Response({'detail': exc.message, **exc.payload}, status=exc.status_code)
+
+
 class CommandeLancerLivraisonAPIView(APIView):
     permission_classes = [AllowAny]  # MVP — accessible sans token
 
@@ -805,6 +890,9 @@ class SocialDisconnectAPIView(APIView):
             vendeur.pages_facebook.all().delete()
         if platform == 'tiktok' or platform == 'all':
             vendeur.tiktok_username = None
+            vendeur.tiktok_open_id = None
+            vendeur.tiktok_access_token = None
+            vendeur.tiktok_refresh_token = None
         if platform == 'demo' or platform == 'all':
             vendeur.is_demo_mode = False
 

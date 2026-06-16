@@ -11,6 +11,12 @@ from .facebook_live import (
 from .facebook_oauth import FacebookOAuthError, facebook_configured
 from .facebook_webhooks import subscribe_vendeur_pages
 from .models import Live, PageFacebook
+from .tiktool_live import (
+    build_tiktok_diffusion,
+    start_tiktool_listener,
+    stop_tiktool_listener,
+    tiktool_configured,
+)
 
 
 class LiveServiceError(Exception):
@@ -56,7 +62,12 @@ def demarrer_live(live: Live) -> Live:
     except FacebookLiveError as exc:
         raise LiveServiceError(exc.message, status_code=exc.status_code) from exc
 
-    tiktok_broadcast = create_demo_tiktok_broadcast(live.vendeur) if live.vendeur.tiktok_username else None
+    tiktok_broadcast = None
+    if live.vendeur.tiktok_username:
+        if live.vendeur.is_demo_mode:
+            tiktok_broadcast = create_demo_tiktok_broadcast(live.vendeur)
+        else:
+            tiktok_broadcast = build_tiktok_diffusion(live)
 
     if not facebook_broadcasts and not tiktok_broadcast and not live.vendeur.is_demo_mode:
         if not pages:
@@ -87,6 +98,17 @@ def demarrer_live(live: Live) -> Live:
             'diffusion_plateformes',
         ]
     )
+
+    if tiktok_broadcast and tiktool_configured() and not live.vendeur.is_demo_mode:
+        started = start_tiktool_listener(live)
+        if started:
+            diffusion = dict(live.diffusion_plateformes or {})
+            tiktok_state = dict(diffusion.get('tiktok') or {})
+            tiktok_state['listener'] = 'running'
+            diffusion['tiktok'] = tiktok_state
+            live.diffusion_plateformes = diffusion
+            live.save(update_fields=['diffusion_plateformes'])
+
     return live
 
 
@@ -102,8 +124,10 @@ def arreter_live(live: Live, auto: bool = False) -> Live:
 
     tiktok = diffusion.get('tiktok')
     if isinstance(tiktok, dict):
-        tiktok = {**tiktok, 'status': 'ENDED'}
+        tiktok = {**tiktok, 'status': 'ENDED', 'listener': 'stopped'}
         diffusion['tiktok'] = tiktok
+
+    stop_tiktool_listener(live)
 
     diffusion['facebook'] = facebook_broadcasts
     diffusion['stopped_at'] = timezone.now().isoformat()

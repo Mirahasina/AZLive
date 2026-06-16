@@ -126,3 +126,97 @@ class JPCommentAnalyzer:
         """Compatibilité ascendante pour les webhooks existants."""
         match = self.find_best_match(query)
         return match[0] if match else None
+
+
+class ConfirmationMessageAnalyzer:
+    """Analyse libre des réponses client — sans format imposé, avec complétion progressive."""
+
+    PLACEHOLDER_NAMES = {'Client Live', 'Client Facebook', 'Client TikTok'}
+
+    def analyze(self, text: str, client=None) -> dict:
+        from .order_confirmation import (
+            _looks_like_date,
+            _looks_like_phone,
+            _looks_like_time,
+            _normalize_phone,
+            parse_confirmation_text,
+        )
+
+        parsed = parse_confirmation_text(text)
+        lines = [line.strip() for line in (text or '').splitlines() if line.strip()]
+
+        if client and len(lines) == 1:
+            parsed = self._infer_single_line(
+                lines[0],
+                client,
+                _looks_like_phone,
+                _looks_like_date,
+                _looks_like_time,
+                _normalize_phone,
+            )
+        elif client:
+            parsed = self._infer_from_missing_fields(
+                lines,
+                client,
+                parsed,
+                _looks_like_phone,
+                _looks_like_date,
+                _looks_like_time,
+                _normalize_phone,
+            )
+
+        return {
+            'raw_text': text,
+            'fields': parsed,
+        }
+
+    def _needs_nom(self, client) -> bool:
+        return not client.nom or client.nom in self.PLACEHOLDER_NAMES
+
+    def _infer_single_line(self, line, client, looks_phone, looks_date, looks_time, normalize_phone):
+        result = {}
+        if looks_phone(line):
+            result['telephone'] = normalize_phone(line) or line
+            return result
+        if looks_time(line):
+            result['heure_livraison'] = line
+            return result
+        if looks_date(line):
+            result['date_livraison'] = line
+            return result
+
+        if self._needs_nom(client):
+            result['nom'] = line
+        elif not client.telephone and sum(ch.isdigit() for ch in line) >= 8:
+            phone = normalize_phone(line)
+            if phone:
+                result['telephone'] = phone
+        elif not client.adresse:
+            result['adresse'] = line
+        elif not client.date_livraison_preferee and looks_date(line):
+            result['date_livraison'] = line
+        elif not client.heure_livraison_preferee and looks_time(line):
+            result['heure_livraison'] = line
+        return result
+
+    def _infer_from_missing_fields(self, lines, client, parsed, looks_phone, looks_date, looks_time, normalize_phone):
+        for line in lines:
+            if line in parsed.values():
+                continue
+            if 'telephone' not in parsed and not client.telephone and looks_phone(line):
+                parsed['telephone'] = normalize_phone(line) or line
+            elif 'heure_livraison' not in parsed and not client.heure_livraison_preferee and looks_time(line):
+                parsed['heure_livraison'] = line
+            elif 'date_livraison' not in parsed and not client.date_livraison_preferee and looks_date(line):
+                parsed['date_livraison'] = line
+            elif (
+                'adresse' not in parsed
+                and not client.adresse
+                and not looks_phone(line)
+                and not looks_date(line)
+                and not looks_time(line)
+                and line != parsed.get('nom')
+                and line != (client.nom if not self._needs_nom(client) else None)
+            ):
+                parsed.setdefault('adresse', line)
+        return parsed

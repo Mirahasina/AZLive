@@ -12,6 +12,9 @@ class Vendeur(models.Model):
     facebook_page_id = models.CharField(max_length=255, blank=True, null=True)
     facebook_page_name = models.CharField(max_length=255, blank=True, null=True)
     tiktok_username = models.CharField(max_length=255, blank=True, null=True)
+    tiktok_open_id = models.CharField(max_length=255, blank=True, null=True, unique=True)
+    tiktok_access_token = models.TextField(blank=True, null=True)
+    tiktok_refresh_token = models.TextField(blank=True, null=True)
     is_demo_mode = models.BooleanField(default=False)
 
     def __str__(self):
@@ -161,6 +164,7 @@ class Client(models.Model):
     telephone = models.CharField(max_length=20)
     adresse = models.TextField()
     date_livraison_preferee = models.DateField(blank=True, null=True)
+    heure_livraison_preferee = models.TimeField(blank=True, null=True)
     facebook_id = models.CharField(max_length=255, blank=True, null=True)
     tiktok_id = models.CharField(max_length=255, blank=True, null=True)
     social_handle = models.CharField(max_length=255, blank=True, null=True)
@@ -321,10 +325,28 @@ class Livraison(models.Model):
 
 
 class Message(models.Model):
+    DIRECTION_OUTBOUND = 'outbound'
+    DIRECTION_INBOUND = 'inbound'
+    DIRECTION_CHOICES = [
+        (DIRECTION_OUTBOUND, 'Sortant'),
+        (DIRECTION_INBOUND, 'Entrant'),
+    ]
+
+    CANAL_FACEBOOK = 'Facebook'
+    CANAL_TIKTOK = 'TikTok'
+    CANAL_WHATSAPP = 'WhatsApp'
+    CANAL_MOCK = 'Mock'
+
     commande = models.ForeignKey(Commande, on_delete=models.CASCADE, related_name='messages')
     contenu = models.TextField()
     date_envoi = models.DateTimeField(auto_now_add=True)
     numero_relance = models.IntegerField(default=0)
+    direction = models.CharField(
+        max_length=20,
+        choices=DIRECTION_CHOICES,
+        default=DIRECTION_OUTBOUND,
+    )
+    canal = models.CharField(max_length=50, blank=True, default='')
 
     def __str__(self):
         return f"Message commande #{self.commande.pk} - relance {self.numero_relance}"
