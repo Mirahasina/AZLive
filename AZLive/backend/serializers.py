@@ -20,7 +20,7 @@ from .models import (
 class PageFacebookSerializer(serializers.ModelSerializer):
     class Meta:
         model = PageFacebook
-        fields = ['id', 'page_id', 'nom', 'statut']
+        fields = ['id', 'page_id', 'nom', 'statut', 'webhook_subscribed']
 
 
 class VendeurSerializer(serializers.ModelSerializer):
@@ -84,7 +84,8 @@ class LiveSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'titre', 'date_live', 'statut', 'vendeur', 'operateur',
             'chiffre_affaires', 'nb_fiches', 'operateur_nom',
-            'produits_dressing', 'produits_dressing_ids', 'pages_facebook'
+            'produits_dressing', 'produits_dressing_ids', 'pages_facebook',
+            'diffusion_plateformes', 'date_debut', 'date_fin',
         ]
 
     def get_chiffre_affaires(self, obj):
