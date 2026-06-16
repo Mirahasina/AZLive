@@ -73,14 +73,21 @@ class AZExpressService:
         tracking_number = f"AZX-{uuid.uuid4().hex[:8].upper()}"
         
         # Log the payload that would be sent to AZExpress API
+        variante = commande.variante or commande.produit.variantes.order_by('id').first()
+        variante_label = (
+            f"{commande.produit.nom} ({variante.couleur}, {variante.taille})"
+            if variante else commande.produit.nom
+        )
+        montant = float(variante.prix_unitaire) if variante else 0
+
         payload = {
             "commande_id": commande.id,
             "vendeur": commande.produit.vendeur.nom,
             "client_nom": commande.client.nom,
             "client_telephone": commande.client.telephone,
             "client_adresse": commande.client.adresse,
-            "produit": f"{commande.produit.nom} ({commande.produit.couleur}, {commande.produit.taille})",
-            "montant_a_percevoir": float(commande.produit.prix),
+            "produit": variante_label,
+            "montant_a_percevoir": montant,
             "tracking_number": tracking_number
         }
         

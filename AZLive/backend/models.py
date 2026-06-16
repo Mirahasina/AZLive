@@ -95,26 +95,57 @@ class Live(models.Model):
 
 class Produit(models.Model):
     nom = models.CharField(max_length=255)
-    taille = models.CharField(max_length=50)
-    couleur = models.CharField(max_length=50)
-    prix = models.DecimalField(max_digits=10, decimal_places=2)
-    stock = models.IntegerField()
     photo = models.ImageField(upload_to='produits/', blank=True, null=True)
     vendeur = models.ForeignKey(Vendeur, on_delete=models.CASCADE, related_name='produits')
-    code_jp = models.CharField(max_length=50, blank=True, null=True)
 
     def __str__(self):
-        return f"{self.nom} ({self.couleur}, {self.taille})"
+        return self.nom
+
+    @property
+    def stock_total(self):
+        return sum(v.stock for v in self.variantes.all())
+
+
+class ProduitImage(models.Model):
+    produit = models.ForeignKey(Produit, on_delete=models.CASCADE, related_name='images')
+    image = models.ImageField(upload_to='produits/')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['created_at', 'id']
+
+    def __str__(self):
+        return f"Image #{self.pk} — {self.produit.nom}"
 
 
 class Variante(models.Model):
     produit = models.ForeignKey(Produit, on_delete=models.CASCADE, related_name='variantes')
     taille = models.CharField(max_length=50)
     couleur = models.CharField(max_length=50)
+    prix_unitaire = models.DecimalField(max_digits=10, decimal_places=2)
     stock = models.IntegerField(default=0)
+    code_jp = models.CharField(max_length=50, unique=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=['produit', 'taille', 'couleur'],
+                name='unique_produit_taille_couleur',
+            ),
+        ]
 
     def __str__(self):
-        return f"{self.produit.nom} - {self.couleur} - {self.taille}"
+        return f"{self.produit.nom} - {self.couleur} - {self.taille} ({self.code_jp})"
+
+    def clean(self):
+        from .validators import validate_code_jp_uniqueness, validate_variante_uniqueness
+
+        validate_variante_uniqueness(self.produit, self.taille, self.couleur, exclude_pk=self.pk)
+        validate_code_jp_uniqueness(self.code_jp, exclude_pk=self.pk)
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        super().save(*args, **kwargs)
 
 
 class Client(models.Model):
@@ -182,23 +213,36 @@ class Commande(models.Model):
 
         # Decrement stock if transitioning to Confirmed
         if (is_new and self.statut == self.STATUT_CONFIRME) or (old_status != self.STATUT_CONFIRME and self.statut == self.STATUT_CONFIRME):
-            if self.produit.stock > 0:
-                self.produit.stock -= 1
-                self.produit.save()
+            self._adjust_variante_stock(-1)
 
         # Increment stock if transitioning from Confirmed to Cancelled
         elif old_status == self.STATUT_CONFIRME and self.statut == self.STATUT_ANNULE:
-            self.produit.stock += 1
-            self.produit.save()
+            self._adjust_variante_stock(1)
 
         # Queue Promotion Logic!
         if not is_new and old_status != self.STATUT_ANNULE and self.statut == self.STATUT_ANNULE:
             self._promote_next_in_queue()
 
+    def _get_stock_variante(self):
+        if self.variante_id:
+            return self.variante
+        return self.produit.variantes.order_by('id').first()
+
+    def _adjust_variante_stock(self, delta):
+        variante = self._get_stock_variante()
+        if variante and variante.stock + delta >= 0:
+            variante.stock += delta
+            variante.save(update_fields=['stock'])
+
+    def get_prix_unitaire(self):
+        if self.variante_id:
+            return self.variante.prix_unitaire
+        first = self.produit.variantes.order_by('id').first()
+        return first.prix_unitaire if first else 0
+
     def delete(self, *args, **kwargs):
         if self.statut == self.STATUT_CONFIRME:
-            self.produit.stock += 1
-            self.produit.save()
+            self._adjust_variante_stock(1)
         self._promote_next_in_queue()
         super().delete(*args, **kwargs)
 
