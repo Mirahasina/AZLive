@@ -4,7 +4,7 @@ from rest_framework import status
 from rest_framework.permissions import AllowAny
 from django.db.models import Max
 
-from .models import Client, Commande, Produit, Message
+from .models import Client, Commande, Produit, Message, Variante
 from .serializers import CommandeSerializer
 from .ai import JPCommentAnalyzer
 from .services import MessagingService
@@ -52,10 +52,14 @@ class FacebookWebhookView(APIView):
 
         # Step 2: Find the product matched
         produit_id = analysis.get('produit_id')
+        variante_id = analysis.get('variante_id')
         if produit_id:
             produit = Produit.objects.filter(id=produit_id).first()
+            variante = Variante.objects.filter(id=variante_id).first() if variante_id else produit.variantes.order_by('id').first() if produit else None
         else:
-            produit = analyzer.find_best_produit(analysis.get('product_query'))
+            match = analyzer.find_best_match(analysis.get('product_query'))
+            produit = match[0] if match else None
+            variante = match[1] if match else None
 
         if not produit:
             return Response(
@@ -78,7 +82,7 @@ class FacebookWebhookView(APIView):
             client.save()
 
         # Step 4: Create order atomically and dispatch notifications inside _create_jp_commande
-        commande = _create_jp_commande(client, produit)
+        commande = _create_jp_commande(client, produit, variante)
 
         serializer = CommandeSerializer(commande)
         return Response({
@@ -116,10 +120,14 @@ class TikTokWebhookView(APIView):
 
         # Step 2: Find the product matched
         produit_id = analysis.get('produit_id')
+        variante_id = analysis.get('variante_id')
         if produit_id:
             produit = Produit.objects.filter(id=produit_id).first()
+            variante = Variante.objects.filter(id=variante_id).first() if variante_id else produit.variantes.order_by('id').first() if produit else None
         else:
-            produit = analyzer.find_best_produit(analysis.get('product_query'))
+            match = analyzer.find_best_match(analysis.get('product_query'))
+            produit = match[0] if match else None
+            variante = match[1] if match else None
 
         if not produit:
             return Response(
@@ -142,7 +150,7 @@ class TikTokWebhookView(APIView):
             client.save()
 
         # Step 4: Create order atomically and dispatch notifications inside _create_jp_commande
-        commande = _create_jp_commande(client, produit)
+        commande = _create_jp_commande(client, produit, variante)
 
         serializer = CommandeSerializer(commande)
         return Response({

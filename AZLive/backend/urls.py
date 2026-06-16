@@ -10,6 +10,7 @@ from .views import (
     JPCaptureAPIView,
     LivraisonTrackingAPIView,
     ProduitDetailView,
+    ProduitImageDeleteView,
     ProduitListCreateView,
     TicketAPIView,
     VendeurListCreateView,
@@ -44,6 +45,7 @@ urlpatterns = [
 
     path('produits/', ProduitListCreateView.as_view(), name='produit-list-create'),
     path('produits/<int:pk>/', ProduitDetailView.as_view(), name='produit-detail'),
+    path('produits/images/<int:pk>/', ProduitImageDeleteView.as_view(), name='produit-image-delete'),
     path('produits/variants/', VarianteListCreateView.as_view(), name='variante-list-create'),
     path('produits/variants/<int:pk>/', VarianteDetailView.as_view(), name='variante-detail'),
 

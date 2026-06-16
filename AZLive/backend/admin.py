@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from .models import Client, Commande, Livraison, Livreur, Paiement, Produit, Vendeur, Message, Collaborateur, Live, Variante
+from .models import Client, Commande, Livraison, Livreur, Paiement, Produit, ProduitImage, Vendeur, Message, Collaborateur, Live, Variante
 
 
 @admin.register(Vendeur)
@@ -9,11 +9,17 @@ class VendeurAdmin(admin.ModelAdmin):
 
 
 
+class ProduitImageInline(admin.TabularInline):
+    model = ProduitImage
+    extra = 1
+
+
 @admin.register(Produit)
 class ProduitAdmin(admin.ModelAdmin):
-    list_display = ('nom', 'couleur', 'taille', 'prix', 'stock', 'vendeur')
-    list_filter = ('couleur', 'taille', 'vendeur')
-    search_fields = ('nom', 'couleur', 'taille')
+    list_display = ('nom', 'vendeur')
+    list_filter = ('vendeur',)
+    search_fields = ('nom',)
+    inlines = [ProduitImageInline]
 
 
 @admin.register(Client)
@@ -66,6 +72,7 @@ class LiveAdmin(admin.ModelAdmin):
 
 @admin.register(Variante)
 class VarianteAdmin(admin.ModelAdmin):
-    list_display = ('produit', 'taille', 'couleur', 'stock')
+    list_display = ('produit', 'code_jp', 'taille', 'couleur', 'prix_unitaire', 'stock')
     list_filter = ('taille', 'couleur')
+    search_fields = ('code_jp', 'produit__nom')
 

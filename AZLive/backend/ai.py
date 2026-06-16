@@ -2,7 +2,7 @@ import re
 
 from django.db import models
 
-from .models import Produit
+from .models import Produit, Variante
 
 
 class JPCommentAnalyzer:
@@ -32,7 +32,9 @@ class JPCommentAnalyzer:
         couleur = self.extract_first(self.COLOR_PATTERN, cleaned)
         taille = self.extract_first(self.SIZE_PATTERN, cleaned)
         quantite = self.extract_first(self.QUANTITY_PATTERN, cleaned)
-        produit = self.find_best_produit(product_query)
+        match = self.find_best_match(product_query, couleur=couleur, taille=taille)
+        produit = match[0] if match else None
+        variante = match[1] if match else None
 
         return {
             'raw_text': comment_text,
@@ -44,6 +46,8 @@ class JPCommentAnalyzer:
             'quantite': int(quantite) if quantite and quantite.isdigit() else None,
             'produit_trouve': produit.nom if produit else None,
             'produit_id': produit.id if produit else None,
+            'variante_id': variante.id if variante else None,
+            'code_jp': variante.code_jp if variante else None,
         }
 
     def normalize(self, text: str) -> str:
@@ -77,26 +81,48 @@ class JPCommentAnalyzer:
         query = re.sub(r'\s+', ' ', query)
         return query
 
-    def find_best_produit(self, query: str):
+    def find_best_match(self, query: str, couleur=None, taille=None):
         if not query:
             return None
 
-        qs = Produit.objects.filter(
-            models.Q(nom__icontains=query)
+        variante = Variante.objects.filter(code_jp__iexact=query.strip()).select_related('produit').first()
+        if variante:
+            return variante.produit, variante
+
+        variante_qs = Variante.objects.select_related('produit').filter(
+            models.Q(code_jp__icontains=query)
+            | models.Q(produit__nom__icontains=query)
             | models.Q(couleur__icontains=query)
             | models.Q(taille__icontains=query)
         )
-        if qs.exists():
-            return qs.first()
+        if couleur:
+            variante_qs = variante_qs.filter(couleur__icontains=couleur)
+        if taille:
+            variante_qs = variante_qs.filter(taille__icontains=taille)
+
+        variante = variante_qs.first()
+        if variante:
+            return variante.produit, variante
+
+        produit = Produit.objects.filter(nom__icontains=query).prefetch_related('variantes').first()
+        if produit:
+            first_variante = produit.variantes.order_by('id').first()
+            return produit, first_variante
 
         tokens = [token for token in query.split() if len(token) > 1]
         for token in tokens:
-            qs = Produit.objects.filter(
-                models.Q(nom__icontains=token)
+            variante = Variante.objects.select_related('produit').filter(
+                models.Q(code_jp__icontains=token)
+                | models.Q(produit__nom__icontains=token)
                 | models.Q(couleur__icontains=token)
                 | models.Q(taille__icontains=token)
-            )
-            if qs.exists():
-                return qs.first()
+            ).first()
+            if variante:
+                return variante.produit, variante
 
         return None
+
+    def find_best_produit(self, query: str):
+        """Compatibilité ascendante pour les webhooks existants."""
+        match = self.find_best_match(query)
+        return match[0] if match else None
