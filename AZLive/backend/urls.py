@@ -31,11 +31,26 @@ from .views import (
     SocialDisconnectAPIView,
     FacebookPagesAPIView,
 )
+from .auth_views import (
+    AuthMeAPIView,
+    FacebookCallbackAPIView,
+    FacebookLoginURLAPIView,
+    FacebookSubscribeWebhooksAPIView,
+    FacebookSyncPagesAPIView,
+    FacebookTokenLoginAPIView,
+)
 from .webhooks import FacebookWebhookView, TikTokWebhookView
+from .live_views import LiveDemarrerAPIView, LiveArreterAPIView
 
 urlpatterns = [
     # Auth
     path('auth/login/', token_views.obtain_auth_token, name='auth-login'),
+    path('auth/me/', AuthMeAPIView.as_view(), name='auth-me'),
+    path('auth/facebook/login/', FacebookLoginURLAPIView.as_view(), name='auth-facebook-login'),
+    path('auth/facebook/callback/', FacebookCallbackAPIView.as_view(), name='auth-facebook-callback'),
+    path('auth/facebook/token/', FacebookTokenLoginAPIView.as_view(), name='auth-facebook-token'),
+    path('auth/facebook/sync-pages/', FacebookSyncPagesAPIView.as_view(), name='auth-facebook-sync-pages'),
+    path('auth/facebook/subscribe-webhooks/', FacebookSubscribeWebhooksAPIView.as_view(), name='auth-facebook-subscribe-webhooks'),
 
     # Vendeurs & Produits
     path('vendeurs/', VendeurListCreateView.as_view(), name='vendeur-list-create'),
@@ -57,6 +72,8 @@ urlpatterns = [
     # Lives / Sessions
     path('lives/', LiveListCreateView.as_view(), name='live-list-create'),
     path('lives/<int:pk>/', LiveDetailView.as_view(), name='live-detail'),
+    path('lives/<int:pk>/demarrer/', LiveDemarrerAPIView.as_view(), name='live-demarrer'),
+    path('lives/<int:pk>/arreter/', LiveArreterAPIView.as_view(), name='live-arreter'),
 
     # Collaborateurs
     path('collaborateurs/', CollaborateurListCreateView.as_view(), name='collaborateur-list-create'),

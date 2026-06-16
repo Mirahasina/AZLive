@@ -11,6 +11,7 @@ https://docs.djangoproject.com/en/5.2/ref/settings/
 """
 
 import os
+import sys
 from pathlib import Path
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
@@ -91,6 +92,14 @@ DATABASES = {
     }
 }
 
+if 'test' in sys.argv:
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.sqlite3',
+            'NAME': ':memory:',
+        }
+    }
+
 
 # Password validation
 # https://docs.djangoproject.com/en/5.2/ref/settings/#auth-password-validators
@@ -150,3 +159,28 @@ REST_FRAMEWORK = {
 }
 
 CORS_ALLOW_ALL_ORIGINS = True
+
+# Facebook OAuth / Graph API
+FACEBOOK_APP_ID = os.environ.get('FACEBOOK_APP_ID', '')
+FACEBOOK_APP_SECRET = os.environ.get('FACEBOOK_APP_SECRET', '')
+FACEBOOK_REDIRECT_URI = os.environ.get(
+    'FACEBOOK_REDIRECT_URI',
+    'http://localhost:8000/api/auth/facebook/callback/',
+)
+FACEBOOK_LOGIN_SUCCESS_URL = os.environ.get(
+    'FACEBOOK_LOGIN_SUCCESS_URL',
+    'http://localhost:3000/auth/facebook/success',
+)
+FACEBOOK_OAUTH_SCOPES = os.environ.get(
+    'FACEBOOK_OAUTH_SCOPES',
+    'email,public_profile,pages_show_list,pages_read_engagement,pages_manage_metadata,pages_manage_posts',
+)
+FACEBOOK_LIVE_STATUS = os.environ.get('FACEBOOK_LIVE_STATUS', 'LIVE_NOW')
+FACEBOOK_WEBHOOK_VERIFY_TOKEN = os.environ.get(
+    'FACEBOOK_WEBHOOK_VERIFY_TOKEN',
+    'azlive_secure_webhook_token_2026',
+)
+FACEBOOK_WEBHOOK_FIELDS = os.environ.get(
+    'FACEBOOK_WEBHOOK_FIELDS',
+    'feed',
+)
