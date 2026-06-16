@@ -3,6 +3,7 @@ from django.db.models import Max
 
 from .ai import JPCommentAnalyzer
 from .models import Client, Commande, Live, Message, PageFacebook, Produit, Vendeur
+from .order_messaging import send_jp_confirmation_message
 from .serializers import CommandeSerializer
 from .services import MessagingService
 
@@ -15,7 +16,7 @@ class JPCaptureError(Exception):
         self.payload = payload or {}
 
 
-def create_jp_commande(client, produit, live=None):
+def create_jp_commande(client, produit, live=None, canal=''):
     """Crée une commande JP avec ordre atomique et notifications associées."""
     with transaction.atomic():
         max_order = (
@@ -34,11 +35,8 @@ def create_jp_commande(client, produit, live=None):
         )
 
         if ordre_jp == 1:
-            message_content = (
-                f"Salama {client.nom}, nahazo ny JP-nao amin'ny '{produit.nom}' izahay. "
-                "Mba hafahao ny baikonao amin'ny alalan'ny fandefasana ny: anarana feno, finday, adiresy ary ny daty tianao hanaterana azy."
-            )
-            MessagingService.send_automatic_message(client, produit, commande.id)
+            outbound = send_jp_confirmation_message(commande)
+            message_content = outbound['content']
         else:
             message_content = (
                 f"Salama {client.nom}, tafiditra ao anatin'ny lisitra miandry (liste d'attente) ho an'ny '{produit.nom}' ianao (Laharana faha-{ordre_jp}). "
@@ -50,8 +48,25 @@ def create_jp_commande(client, produit, live=None):
             commande=commande,
             contenu=message_content,
             numero_relance=0,
+            direction=Message.DIRECTION_OUTBOUND,
+            canal=canal,
         )
         return commande
+
+
+def normalize_tiktok_username(username: str | None) -> str:
+    return (username or '').lstrip('@').strip().lower()
+
+
+def resolve_vendeur_from_tiktok_username(unique_id: str | None):
+    normalized = normalize_tiktok_username(unique_id)
+    if not normalized:
+        return None
+
+    for vendeur in Vendeur.objects.exclude(tiktok_username__isnull=True).exclude(tiktok_username=''):
+        if normalize_tiktok_username(vendeur.tiktok_username) == normalized:
+            return vendeur
+    return None
 
 
 def resolve_vendeur_from_page(page_id: str | None):
@@ -125,6 +140,7 @@ def process_social_comment(
     comment_text: str,
     channel: str,
     page_id: str | None = None,
+    streamer_unique_id: str | None = None,
     vendeur=None,
     live=None,
     id_field: str = 'facebook_id',
@@ -137,6 +153,9 @@ def process_social_comment(
 
     if vendeur is None and page_id:
         vendeur = resolve_vendeur_from_page(page_id)
+
+    if vendeur is None and channel == 'TikTok' and streamer_unique_id:
+        vendeur = resolve_vendeur_from_tiktok_username(streamer_unique_id)
 
     if live is None:
         page = PageFacebook.objects.filter(page_id=str(page_id)).first() if page_id else None
@@ -170,7 +189,7 @@ def process_social_comment(
         client.nom = sender_name
         client.save(update_fields=['nom'])
 
-    commande = create_jp_commande(client, produit, live=live)
+    commande = create_jp_commande(client, produit, live=live, canal=channel)
     return {
         'status': 'JP capturé avec succès',
         'channel': channel,

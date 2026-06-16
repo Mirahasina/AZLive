@@ -5,6 +5,8 @@ from rest_framework.authtoken.models import Token
 from unittest.mock import patch
 
 from .models import Client, Commande, Livraison, Livreur, Paiement, Produit, Vendeur, Message, Variante, Live, PageFacebook
+from .jp_capture import resolve_vendeur_from_tiktok_username
+from .tiktool_live import process_tiktool_chat_event
 
 
 def create_test_produit(vendeur, **kwargs):
@@ -771,4 +773,281 @@ class LiveDiffusionTest(TestCase):
             response.json()['live']['diffusion_plateformes']['facebook'][0]['live_video_id'],
             'fb_live_1',
         )
+
+
+class TikTokOAuthAPITest(TestCase):
+    @staticmethod
+    def _override_tiktok_settings():
+        return override_settings(
+            TIKTOK_CLIENT_KEY='sb-test-key',
+            TIKTOK_CLIENT_SECRET='sb-test-secret',
+            TIKTOK_REDIRECT_URI='https://limacine-adrian-sighted.ngrok-free.dev/api/auth/tiktok/callback/',
+            TIKTOK_LOGIN_SUCCESS_URL='http://localhost:3000/auth/tiktok/success',
+        )
+
+    def test_tiktok_login_url_not_configured(self):
+        response = self.client.get('/api/auth/tiktok/login/')
+        self.assertEqual(response.status_code, 503)
+
+    def test_tiktok_login_url_configured(self):
+        with self._override_tiktok_settings():
+            response = self.client.get('/api/auth/tiktok/login/')
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('auth_url', response.json())
+        self.assertIn('tiktok.com', response.json()['auth_url'])
+
+    def test_tiktok_callback_creates_vendeur(self):
+        with self._override_tiktok_settings():
+            with patch('backend.tiktok_oauth.exchange_code_for_tokens') as mock_tokens:
+                with patch('backend.tiktok_oauth.get_user_profile') as mock_profile:
+                    mock_tokens.return_value = {
+                        'access_token': 'tt-access',
+                        'refresh_token': 'tt-refresh',
+                        'open_id': 'open-123',
+                    }
+                    mock_profile.return_value = {
+                        'open_id': 'open-123',
+                        'display_name': 'Vendeur TikTok',
+                        'username': 'vendeur_tt',
+                    }
+                    login = self.client.get('/api/auth/tiktok/login/')
+                    state = login.json()['state']
+                    response = self.client.get(
+                        '/api/auth/tiktok/callback/',
+                        {'code': 'auth-code', 'state': state, 'format': 'json'},
+                    )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertTrue(data['created'])
+        self.assertIn('token', data)
+        self.assertEqual(data['vendeur']['tiktok_username'], '@vendeur_tt')
+
+
+class TikToolLiveTest(TestCase):
+    @staticmethod
+    def _override_tiktool_settings():
+        return override_settings(TIKTOOL_API_KEY='tk_test_key')
+
+    def setUp(self):
+        self.vendeur = Vendeur.objects.create(
+            nom='Vendeur TT',
+            contact='0341234567',
+            tiktok_username='@maboutique',
+        )
+        self.produit = create_test_produit(self.vendeur, nom='Robe Noire', variante={
+            'taille': 'M',
+            'couleur': 'Noire',
+            'prix_unitaire': '45000.00',
+            'stock': 10,
+            'code_jp': 'JP-ROBE-N',
+        })
+        self.live = Live.objects.create(
+            titre='Live TikTok',
+            vendeur=self.vendeur,
+            statut=Live.STATUT_EN_COURS,
+        )
+
+    def test_resolve_vendeur_from_tiktok_username(self):
+        vendeur = resolve_vendeur_from_tiktok_username('maboutique')
+        self.assertEqual(vendeur, self.vendeur)
+
+    def test_process_tiktool_chat_event(self):
+        result = process_tiktool_chat_event(
+            'maboutique',
+            {
+                'comment': 'JP Robe Noire',
+                'user': {'uniqueId': 'viewer_1', 'nickname': 'Koto'},
+            },
+        )
+        self.assertEqual(result['status'], 'JP capturé avec succès')
+        self.assertEqual(result['live_id'], self.live.id)
+        self.assertEqual(result['vendeur_id'], self.vendeur.id)
+
+    def test_tiktool_webhook_payload(self):
+        with self._override_tiktool_settings():
+            response = self.client.post(
+                '/api/webhooks/tiktok/',
+                {
+                    'event': 'chat',
+                    'uniqueId': 'maboutique',
+                    'data': {
+                        'comment': 'JP Robe Noire',
+                        'user': {'uniqueId': 'viewer_2', 'nickname': 'Aina'},
+                    },
+                },
+                content_type='application/json',
+            )
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(Client.objects.filter(tiktok_id='viewer_2').count(), 1)
+
+    def test_demarrer_live_starts_tiktool_listener(self):
+        self.vendeur.is_demo_mode = False
+        self.vendeur.save()
+        live = Live.objects.create(
+            titre='Live prod',
+            vendeur=self.vendeur,
+            pages_facebook=[],
+        )
+        with self._override_tiktool_settings():
+            with patch('backend.live_service.start_tiktool_listener', return_value=True) as mock_start:
+                with patch('backend.live_service.build_tiktok_diffusion') as mock_diffusion:
+                    mock_diffusion.return_value = {
+                        'username': '@maboutique',
+                        'unique_id': 'maboutique',
+                        'status': 'PENDING_MANUAL',
+                        'demo': False,
+                    }
+                    response = self.client.post(f'/api/lives/{live.id}/demarrer/')
+        self.assertEqual(response.status_code, 200)
+        mock_start.assert_called_once()
+
+
+class OrderConfirmationFlowTest(TestCase):
+    def setUp(self):
+        self.vendeur = Vendeur.objects.create(nom='Vendeur', contact='0341234567')
+        self.produit = create_test_produit(self.vendeur, nom='Robe Noire', variante={
+            'taille': 'M', 'couleur': 'Noire', 'prix_unitaire': '45000.00', 'stock': 10, 'code_jp': 'JPNOIR',
+        })
+        self.client_obj = Client.objects.create(
+            nom='Client TikTok',
+            telephone='',
+            adresse='',
+            tiktok_id='viewer_confirm_1',
+        )
+        self.live = Live.objects.create(titre='Live', vendeur=self.vendeur, statut=Live.STATUT_EN_COURS)
+        self.commande = Commande.objects.create(
+            client=self.client_obj,
+            produit=self.produit,
+            variante=self.produit.variantes.first(),
+            live=self.live,
+            ordre_jp=1,
+        )
+
+    def test_parse_confirmation_text(self):
+        from .order_confirmation import parse_confirmation_text
+
+        parsed = parse_confirmation_text(
+            'Nom : Rabe\nFinday : 0341122334\nAdiresy : Antananarivo Ankadifotsy\nDaty : 20/06/2026\nOra : 14h'
+        )
+        self.assertEqual(parsed['nom'], 'Rabe')
+        self.assertIn('0341122334', parsed['telephone'])
+        self.assertEqual(parsed['heure_livraison'], '14h')
+
+    def test_parse_freeform_malagasy_lines(self):
+        from .order_confirmation import parse_confirmation_text
+
+        parsed = parse_confirmation_text('Lova\nBypass\n12 mai\n14h')
+        self.assertEqual(parsed['nom'], 'Lova')
+        self.assertEqual(parsed['adresse'], 'Bypass')
+        self.assertEqual(parsed['date_livraison'], '12 mai')
+        self.assertEqual(parsed['heure_livraison'], '14h')
+
+    def test_freeform_without_phone_or_time_is_incomplete(self):
+        response = self.client.post(
+            f'/api/commandes/{self.commande.id}/confirmer/',
+            {'message_text': 'Lova\nBypass\n12 mai', 'channel': 'TikTok'},
+            content_type='application/json',
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertFalse(data['complet'])
+        self.assertIn('telephone', data['champs_manquants'])
+        self.assertIn('heure_livraison', data['champs_manquants'])
+        self.assertEqual(data['client']['nom'], 'Lova')
+        self.assertEqual(data['client']['adresse'], 'Bypass')
+        self.commande.refresh_from_db()
+        self.assertEqual(self.commande.statut, Commande.STATUT_JP_CAPTURE)
+        self.client_obj.refresh_from_db()
+        self.assertEqual(self.client_obj.nom, 'Lova')
+
+    def test_incremental_messages_complete_order(self):
+        steps = [
+            'Lova',
+            '0341122334',
+            'Bypass',
+            '12 mai',
+            '14h',
+        ]
+        for index, text in enumerate(steps):
+            response = self.client.post(
+                f'/api/commandes/{self.commande.id}/confirmer/',
+                {'message_text': text, 'channel': 'TikTok'},
+                content_type='application/json',
+            )
+            self.assertEqual(response.status_code, 200)
+            if index < len(steps) - 1:
+                self.assertFalse(response.json()['complet'])
+            else:
+                self.assertTrue(response.json()['complet'])
+        self.commande.refresh_from_db()
+        self.assertEqual(self.commande.statut, Commande.STATUT_CONFIRME)
+
+    @override_settings(AZLIVE_PUBLIC_BASE_URL='http://testserver')
+    def test_confirm_commande_via_api(self):
+        response = self.client.post(
+            f'/api/commandes/{self.commande.id}/confirmer/',
+            {
+                'message_text': 'Lova\n0341122334\nBypass\n12 mai\n14h',
+                'channel': 'TikTok',
+            },
+            content_type='application/json',
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()['complet'])
+        self.assertEqual(response.json()['status'], 'Commande confirmée')
+        self.commande.refresh_from_db()
+        self.assertEqual(self.commande.statut, Commande.STATUT_CONFIRME)
+        self.assertIn('facture.pdf', response.json()['facture_url'])
+
+    def test_facture_pdf_endpoint(self):
+        self.commande.statut = Commande.STATUT_CONFIRME
+        self.commande.save()
+        self.client_obj.telephone = '0341122334'
+        self.client_obj.adresse = 'Tana'
+        self.client_obj.save()
+        response = self.client.get(f'/api/commandes/{self.commande.id}/facture.pdf')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response['Content-Type'], 'application/pdf')
+        self.assertTrue(response.content.startswith(b'%PDF'))
+
+    def test_etiquette_livraison_pdf_endpoint(self):
+        response = self.client.get(f'/api/commandes/{self.commande.id}/etiquette-livraison.pdf')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response['Content-Type'], 'application/pdf')
+
+    def test_facebook_messaging_webhook_confirms_order(self):
+        self.client_obj.facebook_id = 'fb_confirm_user'
+        self.client_obj.tiktok_id = None
+        self.client_obj.save()
+        payload = {
+            'object': 'page',
+            'entry': [{
+                'id': '123456789',
+                'messaging': [{
+                    'sender': {'id': 'fb_confirm_user'},
+                    'recipient': {'id': '123456789'},
+                    'timestamp': 1234567890,
+                    'message': {
+                        'mid': 'mid.1',
+                        'text': 'Nom : Marie\nFinday : 0349988776\nAdiresy : Toamasina\nDaty : 25/06/2026\nOra : 15h30',
+                    },
+                }],
+            }],
+        }
+        PageFacebook.objects.create(
+            vendeur=self.vendeur,
+            page_id='123456789',
+            nom='Page Test',
+            access_token='page-token',
+        )
+        with patch('backend.order_messaging.send_facebook_private_message', return_value={'sent': True}):
+            response = self.client.post(
+                '/api/webhooks/facebook/',
+                payload,
+                content_type='application/json',
+            )
+        self.assertEqual(response.status_code, 201)
+        self.assertTrue(response.json()['results'][0].get('complet'))
+        self.commande.refresh_from_db()
+        self.assertEqual(self.commande.statut, Commande.STATUT_CONFIRME)
 
