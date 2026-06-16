@@ -7,6 +7,8 @@ class Vendeur(models.Model):
     user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='vendeur', null=True, blank=True)
     nom = models.CharField(max_length=255)
     contact = models.CharField(max_length=255)
+    facebook_user_id = models.CharField(max_length=255, blank=True, null=True, unique=True)
+    facebook_access_token = models.TextField(blank=True, null=True)
     facebook_page_id = models.CharField(max_length=255, blank=True, null=True)
     facebook_page_name = models.CharField(max_length=255, blank=True, null=True)
     tiktok_username = models.CharField(max_length=255, blank=True, null=True)
@@ -30,6 +32,7 @@ class PageFacebook(models.Model):
     nom = models.CharField(max_length=255)
     statut = models.CharField(max_length=20, choices=STATUT_CHOICES, default=STATUT_PRET)
     access_token = models.TextField(blank=True, null=True)  # Token page (stocké chiffré en prod)
+    webhook_subscribed = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -73,21 +76,26 @@ class Collaborateur(models.Model):
 
 
 class Live(models.Model):
+    STATUT_PLANIFIE = 'planifie'
     STATUT_EN_COURS = 'en_cours'
     STATUT_TERMINE = 'termine'
 
     STATUT_CHOICES = [
+        (STATUT_PLANIFIE, 'Planifié'),
         (STATUT_EN_COURS, 'En cours'),
         (STATUT_TERMINE, 'Terminé'),
     ]
 
     titre = models.CharField(max_length=255)
     date_live = models.DateTimeField(default=timezone.now)
-    statut = models.CharField(max_length=50, choices=STATUT_CHOICES, default=STATUT_EN_COURS)
+    statut = models.CharField(max_length=50, choices=STATUT_CHOICES, default=STATUT_PLANIFIE)
     vendeur = models.ForeignKey(Vendeur, on_delete=models.CASCADE, related_name='lives')
     operateur = models.ForeignKey(Collaborateur, on_delete=models.SET_NULL, null=True, blank=True, related_name='lives')
     produits_dressing = models.ManyToManyField('Produit', blank=True, related_name='lives_dressing')
     pages_facebook = models.JSONField(default=list, blank=True, null=True)
+    diffusion_plateformes = models.JSONField(default=dict, blank=True)
+    date_debut = models.DateTimeField(null=True, blank=True)
+    date_fin = models.DateTimeField(null=True, blank=True)
 
     def __str__(self):
         return self.titre

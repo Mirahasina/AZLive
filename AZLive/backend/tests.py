@@ -1,8 +1,10 @@
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.contrib.auth.models import User
 from django.core.files.uploadedfile import SimpleUploadedFile
+from rest_framework.authtoken.models import Token
+from unittest.mock import patch
 
-from .models import Client, Commande, Livraison, Livreur, Paiement, Produit, Vendeur, Message
+from .models import Client, Commande, Livraison, Livreur, Paiement, Produit, Vendeur, Message, Live, PageFacebook
 
 
 class BackendModelsTest(TestCase):
@@ -293,7 +295,7 @@ class BackendGapsAPITest(TestCase):
         }
         response = self.client.post('/api/webhooks/facebook/', payload, content_type='application/json')
         self.assertEqual(response.status_code, 201)
-        commande_data = response.json()['commande']
+        commande_data = response.json()['results'][0]['commande']
         # Client imbriqué doit exposer facebook_id
         self.assertIn('facebook_id', commande_data['client'])
         self.assertEqual(commande_data['client']['facebook_id'], 'fb_audit_test')
@@ -438,4 +440,331 @@ class BackendGapsAPITest(TestCase):
         cmd_b = Commande.objects.get(id=response_b.json()['commande']['id'])
         cmd_b.delete()
 
+
+class FacebookOAuthAPITest(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username='vendeur_fb', password='password123')
+        self.vendeur = Vendeur.objects.create(user=self.user, nom='Vendeur FB', contact='0340000000')
+
+    def test_facebook_login_url_not_configured(self):
+        response = self.client.get('/api/auth/facebook/login/')
+        self.assertEqual(response.status_code, 503)
+
+    @staticmethod
+    def _override_facebook_settings():
+        return override_settings(
+            FACEBOOK_APP_ID='test-app-id',
+            FACEBOOK_APP_SECRET='test-app-secret',
+            FACEBOOK_REDIRECT_URI='http://localhost:8000/api/auth/facebook/callback/',
+            FACEBOOK_LOGIN_SUCCESS_URL='http://localhost:3000/auth/facebook/success',
+        )
+
+    def test_facebook_login_url_configured(self):
+        with self._override_facebook_settings():
+            response = self.client.get('/api/auth/facebook/login/')
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('auth_url', response.json())
+        self.assertIn('state', response.json())
+        self.assertIn('facebook.com', response.json()['auth_url'])
+
+    def test_facebook_token_login_creates_vendeur(self):
+        with self._override_facebook_settings():
+            with self.mock_facebook_api():
+                response = self.client.post(
+                    '/api/auth/facebook/token/',
+                    {'access_token': 'short-lived-token'},
+                    content_type='application/json',
+                )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertTrue(data['created'])
+        self.assertIn('token', data)
+        self.assertEqual(data['vendeur']['nom'], 'Marie Rakoto')
+        self.assertEqual(data['user']['email'], 'marie@example.com')
+
+    def test_facebook_token_login_links_existing_vendeur(self):
+        self.vendeur.facebook_user_id = 'fb-user-1'
+        self.vendeur.save()
+
+        with self._override_facebook_settings():
+            with self.mock_facebook_api():
+                response = self.client.post(
+                    '/api/auth/facebook/token/',
+                    {'access_token': 'short-lived-token'},
+                    content_type='application/json',
+                )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertFalse(data['created'])
+        self.assertEqual(data['vendeur']['id'], self.vendeur.id)
+
+    def test_facebook_sync_pages(self):
+        self.vendeur.facebook_user_id = 'fb-user-1'
+        self.vendeur.facebook_access_token = 'long-lived-token'
+        self.vendeur.save()
+        token, _ = Token.objects.get_or_create(user=self.user)
+
+        with self._override_facebook_settings():
+            with self.mock_facebook_pages():
+                response = self.client.post(
+                    '/api/auth/facebook/sync-pages/',
+                    content_type='application/json',
+                    HTTP_AUTHORIZATION=f'Token {token.key}',
+                )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()['pages_synced'], 2)
+        self.vendeur.refresh_from_db()
+        self.assertEqual(self.vendeur.facebook_page_name, 'AZLive Fashion')
+
+    def test_social_connect_requires_facebook_login_when_configured(self):
+        with self._override_facebook_settings():
+            payload = {'vendeur_id': self.vendeur.id, 'platform': 'facebook'}
+            response = self.client.post('/api/vendeurs/connect/', payload, content_type='application/json')
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('Connectez-vous d\'abord via Facebook', response.json()['detail'])
+
+    def test_social_connect_syncs_real_pages_when_token_present(self):
+        self.vendeur.facebook_access_token = 'long-lived-token'
+        self.vendeur.save()
+
+        with self._override_facebook_settings():
+            with self.mock_facebook_pages():
+                payload = {'vendeur_id': self.vendeur.id, 'platform': 'facebook'}
+                response = self.client.post('/api/vendeurs/connect/', payload, content_type='application/json')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()['facebook_page_name'], 'AZLive Fashion')
+        self.assertEqual(len(response.json()['pages_facebook']), 2)
+
+    def test_auth_me_endpoint(self):
+        token, _ = Token.objects.get_or_create(user=self.user)
+        response = self.client.get('/api/auth/me/', HTTP_AUTHORIZATION=f'Token {token.key}')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()['vendeur']['id'], self.vendeur.id)
+        self.assertFalse(response.json()['facebook_connected'])
+
+    @staticmethod
+    def mock_facebook_api():
+        return patch.multiple(
+            'backend.facebook_oauth',
+            get_user_profile=lambda access_token: {
+                'id': 'fb-user-1',
+                'name': 'Marie Rakoto',
+                'email': 'marie@example.com',
+            },
+            exchange_for_long_lived_token=lambda token: 'long-lived-token',
+        )
+
+    @staticmethod
+    def mock_facebook_pages():
+        return patch(
+            'backend.facebook_oauth.get_user_pages',
+            lambda access_token: [
+                {'id': '123456789', 'name': 'AZLive Fashion', 'access_token': 'page-token-1'},
+                {'id': '987654321', 'name': 'Boutique Chic', 'access_token': 'page-token-2'},
+            ],
+        )
+
+
+class FacebookWebhookMetaTest(TestCase):
+    def setUp(self):
+        self.vendeur = Vendeur.objects.create(nom='Vendeur Live', contact='0341234567')
+        self.produit = Produit.objects.create(
+            nom='Robe Noire', taille='M', couleur='Noir', prix='45000.00', stock=10, photo=None, vendeur=self.vendeur
+        )
+        self.page = PageFacebook.objects.create(
+            vendeur=self.vendeur,
+            page_id='123456789',
+            nom='AZLive Fashion',
+            access_token='page-token-1',
+        )
+        self.live = Live.objects.create(
+            titre='Live Robe Noire',
+            vendeur=self.vendeur,
+            statut=Live.STATUT_EN_COURS,
+            pages_facebook=['AZLive Fashion'],
+        )
+        self.live.produits_dressing.add(self.produit)
+
+    @staticmethod
+    def _meta_payload(message='JP Robe Noire', sender_id='fb_meta_001', sender_name='Meta User'):
+        return {
+            'object': 'page',
+            'entry': [
+                {
+                    'id': '123456789',
+                    'time': 1710000000,
+                    'changes': [
+                        {
+                            'field': 'feed',
+                            'value': {
+                                'item': 'comment',
+                                'verb': 'add',
+                                'comment_id': 'comment_1',
+                                'post_id': '123456789_987654321',
+                                'message': message,
+                                'from': {'id': sender_id, 'name': sender_name},
+                            },
+                        }
+                    ],
+                }
+            ],
+        }
+
+    def test_meta_webhook_payload_capture(self):
+        response = self.client.post(
+            '/api/webhooks/facebook/',
+            self._meta_payload(),
+            content_type='application/json',
+        )
+        self.assertEqual(response.status_code, 201)
+        data = response.json()
+        self.assertEqual(data['processed'], 1)
+        self.assertEqual(data['results'][0]['status'], 'JP capturé avec succès')
+        self.assertEqual(data['results'][0]['live_id'], self.live.id)
+        self.assertEqual(data['results'][0]['vendeur_id'], self.vendeur.id)
+
+        client = Client.objects.get(facebook_id='fb_meta_001')
+        self.assertEqual(client.nom, 'Meta User')
+        commande = Commande.objects.get(client=client)
+        self.assertEqual(commande.live_id, self.live.id)
+
+    def test_meta_webhook_ignores_non_purchase_comment(self):
+        response = self.client.post(
+            '/api/webhooks/facebook/',
+            self._meta_payload(message='Bonjour tout le monde'),
+            content_type='application/json',
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()['results'][0]['status'], 'ignored')
+
+    @override_settings(FACEBOOK_APP_ID='test-app-id', FACEBOOK_APP_SECRET='test-app-secret')
+    def test_meta_webhook_rejects_invalid_signature(self):
+        response = self.client.post(
+            '/api/webhooks/facebook/',
+            self._meta_payload(),
+            content_type='application/json',
+            HTTP_X_HUB_SIGNATURE_256='sha256=invalid',
+        )
+        self.assertEqual(response.status_code, 403)
+
+    def test_subscribe_webhooks_endpoint(self):
+        user = User.objects.create_user(username='vendeur_wh', password='password123')
+        self.vendeur.user = user
+        self.vendeur.save()
+        token, _ = Token.objects.get_or_create(user=user)
+
+        with FacebookOAuthAPITest._override_facebook_settings():
+            with patch(
+                'backend.facebook_webhooks.subscribe_page_webhooks',
+                lambda page_id, page_access_token: {'success': True},
+            ):
+                response = self.client.post(
+                    '/api/auth/facebook/subscribe-webhooks/',
+                    content_type='application/json',
+                    HTTP_AUTHORIZATION=f'Token {token.key}',
+                )
+
+        self.assertEqual(response.status_code, 200)
+        self.page.refresh_from_db()
+        self.assertTrue(self.page.webhook_subscribed)
+        self.assertEqual(len(response.json()['subscribed_pages']), 1)
+
+
+class LiveDiffusionTest(TestCase):
+    def setUp(self):
+        self.vendeur = Vendeur.objects.create(
+            nom='Vendeur Live',
+            contact='0341234567',
+            is_demo_mode=True,
+            tiktok_username='@maboutique_tiktok',
+        )
+        self.page = PageFacebook.objects.create(
+            vendeur=self.vendeur,
+            page_id='123456789',
+            nom='AZLive Fashion',
+            access_token='page-token-1',
+        )
+        self.live = Live.objects.create(
+            titre='Live Robe Noire',
+            vendeur=self.vendeur,
+            pages_facebook=['AZLive Fashion'],
+        )
+
+    def test_demarrer_live_starts_all_platforms(self):
+        response = self.client.post(f'/api/lives/{self.live.id}/demarrer/')
+        self.assertEqual(response.status_code, 200)
+        data = response.json()['live']
+        self.assertEqual(data['statut'], Live.STATUT_EN_COURS)
+        self.assertEqual(len(data['diffusion_plateformes']['facebook']), 1)
+        self.assertEqual(data['diffusion_plateformes']['tiktok']['status'], 'LIVE')
+        self.assertIsNotNone(data['date_debut'])
+
+    def test_arreter_live_stops_all_platforms(self):
+        self.client.post(f'/api/lives/{self.live.id}/demarrer/')
+        response = self.client.post(f'/api/lives/{self.live.id}/arreter/')
+        self.assertEqual(response.status_code, 200)
+        data = response.json()['live']
+        self.assertEqual(data['statut'], Live.STATUT_TERMINE)
+        self.assertEqual(data['diffusion_plateformes']['facebook'][0]['status'], 'ENDED')
+        self.assertEqual(data['diffusion_plateformes']['tiktok']['status'], 'ENDED')
+        self.assertIsNotNone(data['date_fin'])
+
+    def test_starting_new_live_auto_stops_previous(self):
+        live_b = Live.objects.create(titre='Live B', vendeur=self.vendeur, pages_facebook=['AZLive Fashion'])
+        self.client.post(f'/api/lives/{self.live.id}/demarrer/')
+        response = self.client.post(f'/api/lives/{live_b.id}/demarrer/')
+        self.assertEqual(response.status_code, 200)
+
+        self.live.refresh_from_db()
+        live_b.refresh_from_db()
+        self.assertEqual(self.live.statut, Live.STATUT_TERMINE)
+        self.assertEqual(live_b.statut, Live.STATUT_EN_COURS)
+
+    def test_patch_statut_triggers_start_and_stop(self):
+        response = self.client.patch(
+            f'/api/lives/{self.live.id}/',
+            {'statut': Live.STATUT_EN_COURS},
+            content_type='application/json',
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()['statut'], Live.STATUT_EN_COURS)
+        self.assertTrue(response.json()['diffusion_plateformes'])
+
+        response = self.client.patch(
+            f'/api/lives/{self.live.id}/',
+            {'statut': Live.STATUT_TERMINE},
+            content_type='application/json',
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()['statut'], Live.STATUT_TERMINE)
+
+    @staticmethod
+    def _override_facebook_settings():
+        return override_settings(
+            FACEBOOK_APP_ID='test-app-id',
+            FACEBOOK_APP_SECRET='test-app-secret',
+        )
+
+    def test_demarrer_live_real_facebook_mocked(self):
+        self.vendeur.is_demo_mode = False
+        self.vendeur.save()
+
+        with self._override_facebook_settings():
+            with patch(
+                'backend.facebook_live.create_facebook_live_broadcast',
+                lambda page, title, description='': {
+                    'page_id': page.page_id,
+                    'page_name': page.nom,
+                    'live_video_id': 'fb_live_1',
+                    'status': 'LIVE',
+                    'stream_url': 'rtmp://live.facebook.com/app/stream',
+                },
+            ):
+                response = self.client.post(f'/api/lives/{self.live.id}/demarrer/')
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.json()['live']['diffusion_plateformes']['facebook'][0]['live_video_id'],
+            'fb_live_1',
+        )
 
