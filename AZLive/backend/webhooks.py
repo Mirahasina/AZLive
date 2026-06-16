@@ -1,97 +1,53 @@
-from rest_framework.views import APIView
-from rest_framework.response import Response
+import json
+
+from django.conf import settings
+from django.http import HttpResponse
 from rest_framework import status
 from rest_framework.permissions import AllowAny
-from django.db.models import Max
+from rest_framework.response import Response
+from rest_framework.views import APIView
 
-from .models import Client, Commande, Produit, Message, Variante
-from .serializers import CommandeSerializer
-from .ai import JPCommentAnalyzer
-from .services import MessagingService
-from .views import _create_jp_commande
+from .facebook_oauth import facebook_configured
+from .facebook_webhooks import (
+    process_facebook_webhook_payload,
+    verify_webhook_signature,
+)
+from .jp_capture import JPCaptureError, process_social_comment
 
 
 class FacebookWebhookView(APIView):
     permission_classes = [AllowAny]
 
     def get(self, request):
-        # Verification flow for Facebook Webhook setup
         mode = request.query_params.get('hub.mode')
         token = request.query_params.get('hub.verify_token')
         challenge = request.query_params.get('hub.challenge')
 
-        # Use token: 'azlive_secure_webhook_token_2026'
-        verify_token = 'azlive_secure_webhook_token_2026'
+        if mode == 'subscribe' and token == settings.FACEBOOK_WEBHOOK_VERIFY_TOKEN:
+            return HttpResponse(challenge, content_type='text/plain')
 
-        if mode == 'subscribe' and token == verify_token:
-            from django.http import HttpResponse
-            return HttpResponse(challenge, content_type="text/plain")
-        
         return Response({'detail': 'Token de vérification invalide.'}, status=status.HTTP_403_FORBIDDEN)
 
     def post(self, request):
-        sender_facebook_id = request.data.get('sender_facebook_id')
-        sender_name = request.data.get('sender_name', 'Client Facebook')
-        comment_text = request.data.get('comment_text', '')
+        raw_body = request.body
+        signature = request.META.get('HTTP_X_HUB_SIGNATURE_256')
 
-        if not sender_facebook_id or not comment_text:
-            return Response(
-                {'error': 'Les champs sender_facebook_id et comment_text sont obligatoires.'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
+        if facebook_configured() and not verify_webhook_signature(raw_body, signature):
+            return Response({'detail': 'Signature webhook invalide.'}, status=status.HTTP_403_FORBIDDEN)
 
-        # Step 1: Analyze comment
-        analyzer = JPCommentAnalyzer()
-        analysis = analyzer.analyze(comment_text)
+        try:
+            payload = json.loads(raw_body.decode('utf-8') or '{}')
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            payload = request.data
 
-        if analysis.get('intent') != 'achat':
-            return Response(
-                {'detail': 'Commentaire ignoré (intention d\'achat non détectée).', 'ai_analysis': analysis},
-                status=status.HTTP_200_OK
-            )
-
-        # Step 2: Find the product matched
-        produit_id = analysis.get('produit_id')
-        variante_id = analysis.get('variante_id')
-        if produit_id:
-            produit = Produit.objects.filter(id=produit_id).first()
-            variante = Variante.objects.filter(id=variante_id).first() if variante_id else produit.variantes.order_by('id').first() if produit else None
-        else:
-            match = analyzer.find_best_match(analysis.get('product_query'))
-            produit = match[0] if match else None
-            variante = match[1] if match else None
-
-        if not produit:
-            return Response(
-                {'error': 'Produit introuvable pour ce commentaire.', 'ai_analysis': analysis},
-                status=status.HTTP_404_NOT_FOUND
-            )
-
-        # Step 3: Find or create Client
-        client, created = Client.objects.get_or_create(
-            facebook_id=sender_facebook_id,
-            defaults={
-                'nom': sender_name,
-                'telephone': '',
-                'adresse': ''
-            }
+        outcome = process_facebook_webhook_payload(payload)
+        return Response(
+            {
+                'processed': len(outcome['results']),
+                'results': outcome['results'],
+            },
+            status=outcome['status_code'],
         )
-        
-        if not created and client.nom == 'Client Live' and sender_name != 'Client Facebook':
-            client.nom = sender_name
-            client.save()
-
-        # Step 4: Create order atomically and dispatch notifications inside _create_jp_commande
-        commande = _create_jp_commande(client, produit, variante)
-
-        serializer = CommandeSerializer(commande)
-        return Response({
-            'status': 'JP capturé avec succès',
-            'channel': 'Facebook',
-            'client_cree': created,
-            'commande': serializer.data,
-            'ai_analysis': analysis
-        }, status=status.HTTP_201_CREATED)
 
 
 class TikTokWebhookView(APIView):
@@ -102,61 +58,15 @@ class TikTokWebhookView(APIView):
         sender_name = request.data.get('sender_name', 'Client TikTok')
         comment_text = request.data.get('comment_text', '')
 
-        if not sender_tiktok_id or not comment_text:
-            return Response(
-                {'error': 'Les champs sender_tiktok_id et comment_text sont obligatoires.'},
-                status=status.HTTP_400_BAD_REQUEST
+        try:
+            result = process_social_comment(
+                sender_id=str(sender_tiktok_id),
+                sender_name=sender_name,
+                comment_text=comment_text,
+                channel='TikTok',
+                id_field='tiktok_id',
             )
-
-        # Step 1: Analyze comment
-        analyzer = JPCommentAnalyzer()
-        analysis = analyzer.analyze(comment_text)
-
-        if analysis.get('intent') != 'achat':
-            return Response(
-                {'detail': 'Commentaire ignoré (intention d\'achat non détectée).', 'ai_analysis': analysis},
-                status=status.HTTP_200_OK
-            )
-
-        # Step 2: Find the product matched
-        produit_id = analysis.get('produit_id')
-        variante_id = analysis.get('variante_id')
-        if produit_id:
-            produit = Produit.objects.filter(id=produit_id).first()
-            variante = Variante.objects.filter(id=variante_id).first() if variante_id else produit.variantes.order_by('id').first() if produit else None
-        else:
-            match = analyzer.find_best_match(analysis.get('product_query'))
-            produit = match[0] if match else None
-            variante = match[1] if match else None
-
-        if not produit:
-            return Response(
-                {'error': 'Produit introuvable pour ce commentaire.', 'ai_analysis': analysis},
-                status=status.HTTP_404_NOT_FOUND
-            )
-
-        # Step 3: Find or create Client
-        client, created = Client.objects.get_or_create(
-            tiktok_id=sender_tiktok_id,
-            defaults={
-                'nom': sender_name,
-                'telephone': '',
-                'adresse': ''
-            }
-        )
-
-        if not created and client.nom == 'Client Live' and sender_name != 'Client TikTok':
-            client.nom = sender_name
-            client.save()
-
-        # Step 4: Create order atomically and dispatch notifications inside _create_jp_commande
-        commande = _create_jp_commande(client, produit, variante)
-
-        serializer = CommandeSerializer(commande)
-        return Response({
-            'status': 'JP capturé avec succès',
-            'channel': 'TikTok',
-            'client_cree': created,
-            'commande': serializer.data,
-            'ai_analysis': analysis
-        }, status=status.HTTP_201_CREATED)
+            status_code = 201 if result.get('status') != 'ignored' else status.HTTP_200_OK
+            return Response(result, status=status_code)
+        except JPCaptureError as exc:
+            return Response({'error': exc.message, **exc.payload}, status=exc.status_code)

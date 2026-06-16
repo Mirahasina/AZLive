@@ -29,6 +29,9 @@ from .serializers import (
     PageFacebookSerializer,
 )
 from .services import MessagingService, AZExpressService
+from .facebook_oauth import FacebookOAuthError, facebook_configured, sync_vendeur_pages
+from .jp_capture import create_jp_commande
+from .live_service import arreter_live, demarrer_live
 
 
 def _commande_variante(commande):
@@ -226,42 +229,9 @@ class JPCaptureAPIView(APIView):
         )
 
 
-def _create_jp_commande(client, produit, variante=None):
-    """Utilitaire partagé : crée une commande JP avec ordre atomique (protège contre les race conditions)."""
-    if variante is None:
-        variante = produit.variantes.order_by('id').first()
-
-    with transaction.atomic():
-        max_order = Commande.objects.select_for_update().filter(produit=produit).aggregate(max_ordre=Max('ordre_jp'))['max_ordre'] or 0
-        ordre_jp = max_order + 1
-        commande = Commande.objects.create(
-            client=client,
-            produit=produit,
-            variante=variante,
-            ordre_jp=ordre_jp,
-            statut=Commande.STATUT_JP_CAPTURE
-        )
-
-        if ordre_jp == 1:
-            message_content = (
-                f"Salama {client.nom}, nahazo ny JP-nao amin'ny '{produit.nom}' izahay. "
-                "Mba hafahao ny baikonao amin'ny alalan'ny fandefasana ny: anarana feno, finday, adiresy ary ny daty tianao hanaterana azy."
-            )
-            MessagingService.send_automatic_message(client, produit, commande.id)
-        else:
-            message_content = (
-                f"Salama {client.nom}, tafiditra ao anatin'ny lisitra miandry (liste d'attente) ho an'ny '{produit.nom}' ianao (Laharana faha-{ordre_jp}). "
-                "Hampilazainay ianao raha misy fahafahana avy amin'ireo nialoha anao."
-            )
-            MessagingService.send_waiting_list_message(client, produit, ordre_jp, commande.id)
-
-        from .models import Message
-        Message.objects.create(
-            commande=commande,
-            contenu=message_content,
-            numero_relance=0
-        )
-        return commande
+def _create_jp_commande(client, produit, live=None):
+    """Alias rétrocompatible — voir backend.jp_capture.create_jp_commande."""
+    return create_jp_commande(client, produit, live=live)
 
 
 class JPAnalyseAPIView(APIView):
@@ -655,6 +625,16 @@ class LiveDetailView(generics.RetrieveUpdateDestroyAPIView):
     serializer_class = LiveSerializer
     permission_classes = [AllowAny]
 
+    def perform_update(self, serializer):
+        old_statut = serializer.instance.statut
+        live = serializer.save()
+        if old_statut != live.statut:
+            if live.statut == Live.STATUT_EN_COURS:
+                live = demarrer_live(live)
+            elif live.statut == Live.STATUT_TERMINE:
+                live = arreter_live(live)
+            serializer.instance = live
+
 
 class CollaborateurListCreateView(generics.ListCreateAPIView):
     queryset = Collaborateur.objects.all().order_by('nom')
@@ -758,22 +738,38 @@ class SocialConnectAPIView(APIView):
         vendeur = get_object_or_404(Vendeur, id=vendeur_id)
 
         if platform == 'facebook':
-            vendeur.facebook_page_id = request.data.get('facebook_page_id', 'fb_page_123456789')
-            vendeur.facebook_page_name = request.data.get('facebook_page_name', 'Ma Boutique Facebook Officielle')
-            vendeur.is_demo_mode = False
-
-            pages_to_create = [
-                {'page_id': 'fb_page_123', 'nom': 'AZLive Fashion'},
-                {'page_id': 'fb_page_456', 'nom': 'Boutique Chic Madagascar'},
-                {'page_id': 'fb_page_789', 'nom': 'Tana Dressing Hub'},
-                {'page_id': 'fb_page_999', 'nom': "L'armoire des Princesses"},
-            ]
-            for p in pages_to_create:
-                PageFacebook.objects.get_or_create(
-                    vendeur=vendeur,
-                    page_id=p['page_id'],
-                    defaults={'nom': p['nom'], 'statut': PageFacebook.STATUT_PRET}
+            if facebook_configured() and vendeur.facebook_access_token:
+                try:
+                    sync_vendeur_pages(vendeur)
+                except FacebookOAuthError as exc:
+                    return Response({'detail': exc.message}, status=exc.status_code)
+            elif facebook_configured() and not vendeur.facebook_access_token:
+                return Response(
+                    {
+                        'detail': (
+                            'Connectez-vous d\'abord via Facebook '
+                            '(POST /api/auth/facebook/token/ ou le flux OAuth).'
+                        )
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
                 )
+            else:
+                vendeur.facebook_page_id = request.data.get('facebook_page_id', 'fb_page_123456789')
+                vendeur.facebook_page_name = request.data.get('facebook_page_name', 'Ma Boutique Facebook Officielle')
+                vendeur.is_demo_mode = False
+
+                pages_to_create = [
+                    {'page_id': 'fb_page_123', 'nom': 'AZLive Fashion'},
+                    {'page_id': 'fb_page_456', 'nom': 'Boutique Chic Madagascar'},
+                    {'page_id': 'fb_page_789', 'nom': 'Tana Dressing Hub'},
+                    {'page_id': 'fb_page_999', 'nom': "L'armoire des Princesses"},
+                ]
+                for p in pages_to_create:
+                    PageFacebook.objects.get_or_create(
+                        vendeur=vendeur,
+                        page_id=p['page_id'],
+                        defaults={'nom': p['nom'], 'statut': PageFacebook.STATUT_PRET}
+                    )
         elif platform == 'tiktok':
             vendeur.tiktok_username = request.data.get('tiktok_username', '@maboutique_tiktok')
             vendeur.is_demo_mode = False
@@ -804,6 +800,8 @@ class SocialDisconnectAPIView(APIView):
         if platform == 'facebook' or platform == 'all':
             vendeur.facebook_page_id = None
             vendeur.facebook_page_name = None
+            vendeur.facebook_user_id = None
+            vendeur.facebook_access_token = None
             vendeur.pages_facebook.all().delete()
         if platform == 'tiktok' or platform == 'all':
             vendeur.tiktok_username = None
