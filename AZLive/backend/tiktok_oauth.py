@@ -1,3 +1,4 @@
+import hashlib
 import json
 import secrets
 import urllib.error
@@ -58,31 +59,51 @@ def _tiktok_request(url, params=None, method='GET', bearer_token=None):
         raise TikTokOAuthError(f'Impossible de contacter TikTok: {exc.reason}', status_code=503) from exc
 
 
-def generate_oauth_state() -> str:
-    return STATE_SIGNER.sign(secrets.token_urlsafe(24))
+def _generate_code_verifier() -> str:
+    return secrets.token_urlsafe(48)[:64]
 
 
-def validate_oauth_state(state: str) -> None:
+def _generate_code_challenge(code_verifier: str) -> str:
+    return hashlib.sha256(code_verifier.encode('utf-8')).hexdigest()
+
+
+def generate_oauth_state() -> tuple[str, str]:
+    verifier = _generate_code_verifier()
+    challenge = _generate_code_challenge(verifier)
+    nonce = secrets.token_urlsafe(24)
+    state = STATE_SIGNER.sign(f'{nonce}|{verifier}')
+    return state, challenge
+
+
+def validate_oauth_state(state: str) -> str:
     if not state:
         raise TikTokOAuthError('Le paramètre state est requis.')
     try:
-        STATE_SIGNER.unsign(state)
+        unsigned = STATE_SIGNER.unsign(state)
     except BadSignature as exc:
         raise TikTokOAuthError('State OAuth invalide ou expiré.') from exc
+    if '|' not in unsigned:
+        raise TikTokOAuthError('State OAuth invalide ou expiré.')
+    _, verifier = unsigned.split('|', 1)
+    if not verifier:
+        raise TikTokOAuthError('State OAuth invalide ou expiré.')
+    return verifier
 
 
-def build_oauth_url(state: str) -> str:
+def build_oauth_url(state: str, code_challenge: str) -> str:
     params = {
         'client_key': settings.TIKTOK_CLIENT_KEY,
         'response_type': 'code',
         'scope': settings.TIKTOK_OAUTH_SCOPES,
         'redirect_uri': settings.TIKTOK_REDIRECT_URI,
         'state': state,
+        'code_challenge': code_challenge,
+        'code_challenge_method': 'S256',
     }
     return f'{TIKTOK_AUTH_URL}?{urllib.parse.urlencode(params)}'
 
 
-def exchange_code_for_tokens(code: str) -> dict[str, Any]:
+def exchange_code_for_tokens(code: str, code_verifier: str) -> dict[str, Any]:
     payload = _tiktok_request(
         TIKTOK_TOKEN_URL,
         {
@@ -91,6 +112,7 @@ def exchange_code_for_tokens(code: str) -> dict[str, Any]:
             'code': code,
             'grant_type': 'authorization_code',
             'redirect_uri': settings.TIKTOK_REDIRECT_URI,
+            'code_verifier': code_verifier,
         },
         method='POST',
     )
@@ -178,8 +200,8 @@ def _create_user_for_vendeur(vendeur: Vendeur, open_id: str, name: str) -> User:
 
 
 def authenticate_with_code(code: str, state: str) -> tuple[Vendeur, User, bool, str]:
-    validate_oauth_state(state)
-    token_payload = exchange_code_for_tokens(code)
+    code_verifier = validate_oauth_state(state)
+    token_payload = exchange_code_for_tokens(code, code_verifier)
     profile = get_user_profile(token_payload['access_token'])
     vendeur, user, created = get_or_create_vendeur_from_tiktok(profile, token_payload)
     auth_token = issue_auth_token(user)
