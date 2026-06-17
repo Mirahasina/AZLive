@@ -795,6 +795,8 @@ class TikTokOAuthAPITest(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn('auth_url', response.json())
         self.assertIn('tiktok.com', response.json()['auth_url'])
+        self.assertIn('code_challenge=', response.json()['auth_url'])
+        self.assertIn('code_challenge_method=S256', response.json()['auth_url'])
 
     def test_tiktok_callback_creates_vendeur(self):
         with self._override_tiktok_settings():

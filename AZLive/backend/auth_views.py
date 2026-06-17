@@ -212,10 +212,10 @@ class TikTokLoginURLAPIView(APIView):
                 status=status.HTTP_503_SERVICE_UNAVAILABLE,
             )
 
-        state = generate_tiktok_oauth_state()
+        state, code_challenge = generate_tiktok_oauth_state()
         return Response(
             {
-                'auth_url': build_tiktok_oauth_url(state),
+                'auth_url': build_tiktok_oauth_url(state, code_challenge),
                 'state': state,
                 'redirect_uri': settings.TIKTOK_REDIRECT_URI,
                 'scopes': settings.TIKTOK_OAUTH_SCOPES.split(','),
