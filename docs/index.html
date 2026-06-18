@@ -4,21 +4,330 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="tiktok-developers-site-verification" content="T5QdnJZcyqTpGFmsX5b9MFlyVUBWIAdw">
-  <title>AZLive</title>
+  <title>AZLive — Live shopping pour vendeurs à Madagascar</title>
+  <meta name="description" content="AZLive est la plateforme de live shopping qui connecte TikTok et Facebook, gère vos lives en direct et capture automatiquement les commandes depuis les commentaires.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <style>
-    body { font-family: system-ui, sans-serif; max-width: 720px; margin: 40px auto; padding: 0 20px; line-height: 1.6; color: #111; }
-    h1 { color: #ff0050; }
-    a { color: #ff0050; }
+    :root {
+      --pink: #ff0050;
+      --pink-dark: #d6004a;
+      --blue: #1877f2;
+      --ink: #0f1115;
+      --muted: #5b6472;
+      --bg: #ffffff;
+      --bg-soft: #f7f8fa;
+      --border: #e7e9ee;
+      --radius: 16px;
+      --shadow: 0 10px 40px rgba(15, 17, 21, 0.08);
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html { scroll-behavior: smooth; }
+    body {
+      font-family: 'Inter', system-ui, -apple-system, sans-serif;
+      color: var(--ink);
+      background: var(--bg);
+      line-height: 1.6;
+      -webkit-font-smoothing: antialiased;
+    }
+    a { color: inherit; text-decoration: none; }
+    .container { width: 100%; max-width: 1120px; margin: 0 auto; padding: 0 24px; }
+
+    /* Header */
+    header {
+      position: sticky; top: 0; z-index: 50;
+      background: rgba(255,255,255,0.85);
+      backdrop-filter: saturate(180%) blur(12px);
+      border-bottom: 1px solid var(--border);
+    }
+    .nav { display: flex; align-items: center; justify-content: space-between; height: 68px; }
+    .brand { display: flex; align-items: center; gap: 10px; font-weight: 800; font-size: 20px; letter-spacing: -0.02em; }
+    .brand .logo {
+      width: 34px; height: 34px; border-radius: 9px;
+      background: linear-gradient(135deg, var(--pink), #7b2ff7);
+      display: grid; place-items: center; color: #fff; font-weight: 800; font-size: 16px;
+    }
+    .nav-links { display: flex; gap: 30px; align-items: center; }
+    .nav-links a { color: var(--muted); font-weight: 500; font-size: 15px; transition: color .15s; }
+    .nav-links a:hover { color: var(--ink); }
+    .btn {
+      display: inline-flex; align-items: center; gap: 8px;
+      background: var(--pink); color: #fff; font-weight: 600; font-size: 15px;
+      padding: 11px 20px; border-radius: 10px; transition: transform .12s, background .15s;
+      border: none; cursor: pointer;
+    }
+    .btn:hover { background: var(--pink-dark); transform: translateY(-1px); }
+    .btn.ghost { background: transparent; color: var(--ink); border: 1px solid var(--border); }
+    .btn.ghost:hover { background: var(--bg-soft); }
+    @media (max-width: 760px) { .nav-links { display: none; } }
+
+    /* Hero */
+    .hero { padding: 88px 0 72px; background: radial-gradient(1000px 500px at 70% -10%, rgba(255,0,80,0.08), transparent 60%); }
+    .hero-grid { display: grid; grid-template-columns: 1.1fr 0.9fr; gap: 56px; align-items: center; }
+    .badge {
+      display: inline-flex; align-items: center; gap: 8px;
+      background: var(--bg-soft); border: 1px solid var(--border);
+      color: var(--muted); font-size: 13px; font-weight: 600;
+      padding: 6px 14px; border-radius: 999px; margin-bottom: 22px;
+    }
+    .badge .dot { width: 8px; height: 8px; border-radius: 50%; background: #16a34a; }
+    .hero h1 { font-size: 52px; line-height: 1.05; letter-spacing: -0.03em; font-weight: 800; margin-bottom: 20px; }
+    .hero h1 .grad { background: linear-gradient(120deg, var(--pink), #7b2ff7); -webkit-background-clip: text; background-clip: text; color: transparent; }
+    .hero p.lead { font-size: 19px; color: var(--muted); margin-bottom: 32px; max-width: 540px; }
+    .hero-cta { display: flex; gap: 14px; flex-wrap: wrap; }
+    .hero-visual {
+      background: linear-gradient(160deg, #1a1d24, #0f1115);
+      border-radius: 24px; padding: 26px; box-shadow: var(--shadow); color: #fff;
+    }
+    .live-pill { display: inline-flex; align-items: center; gap: 7px; background: var(--pink); color: #fff; font-size: 12px; font-weight: 700; padding: 5px 12px; border-radius: 999px; text-transform: uppercase; letter-spacing: .04em; }
+    .live-pill .pulse { width: 8px; height: 8px; border-radius: 50%; background: #fff; animation: pulse 1.4s infinite; }
+    @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
+    .chat { margin-top: 20px; display: flex; flex-direction: column; gap: 12px; }
+    .msg { background: rgba(255,255,255,0.07); border: 1px solid rgba(255,255,255,0.1); border-radius: 12px; padding: 11px 14px; font-size: 14px; }
+    .msg b { color: #ff7aa6; }
+    .msg.jp { background: rgba(255,0,80,0.16); border-color: rgba(255,0,80,0.4); }
+    .order-tag { margin-top: 6px; font-size: 12px; color: #9fe6b0; font-weight: 600; }
+    @media (max-width: 860px) { .hero-grid { grid-template-columns: 1fr; gap: 40px; } .hero h1 { font-size: 38px; } }
+
+    /* Sections */
+    section.block { padding: 80px 0; }
+    .section-head { text-align: center; max-width: 640px; margin: 0 auto 52px; }
+    .section-head .kicker { color: var(--pink); font-weight: 700; font-size: 14px; text-transform: uppercase; letter-spacing: .08em; }
+    .section-head h2 { font-size: 36px; letter-spacing: -0.02em; margin: 10px 0 14px; }
+    .section-head p { color: var(--muted); font-size: 17px; }
+
+    .features { display: grid; grid-template-columns: repeat(3, 1fr); gap: 24px; }
+    .card { background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); padding: 28px; transition: transform .15s, box-shadow .15s; }
+    .card:hover { transform: translateY(-4px); box-shadow: var(--shadow); }
+    .card .ico { width: 48px; height: 48px; border-radius: 12px; display: grid; place-items: center; font-size: 22px; background: var(--bg-soft); margin-bottom: 16px; }
+    .card h3 { font-size: 19px; margin-bottom: 8px; }
+    .card p { color: var(--muted); font-size: 15px; }
+    @media (max-width: 860px) { .features { grid-template-columns: 1fr; } }
+
+    /* Steps */
+    .steps-wrap { background: var(--bg-soft); }
+    .steps { display: grid; grid-template-columns: repeat(4, 1fr); gap: 24px; counter-reset: step; }
+    .step { position: relative; padding: 24px; }
+    .step .num { width: 40px; height: 40px; border-radius: 50%; background: var(--pink); color: #fff; font-weight: 700; display: grid; place-items: center; margin-bottom: 16px; }
+    .step h4 { font-size: 17px; margin-bottom: 6px; }
+    .step p { color: var(--muted); font-size: 14px; }
+    @media (max-width: 860px) { .steps { grid-template-columns: 1fr 1fr; } }
+    @media (max-width: 520px) { .steps { grid-template-columns: 1fr; } }
+
+    /* Platforms */
+    .platforms { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
+    .platform { border: 1px solid var(--border); border-radius: var(--radius); padding: 30px; display: flex; gap: 18px; align-items: flex-start; }
+    .platform .pico { width: 52px; height: 52px; border-radius: 14px; display: grid; place-items: center; color: #fff; font-weight: 800; font-size: 20px; flex-shrink: 0; }
+    .platform.tiktok .pico { background: #000; }
+    .platform.facebook .pico { background: var(--blue); }
+    .platform h3 { font-size: 19px; margin-bottom: 6px; }
+    .platform p { color: var(--muted); font-size: 15px; }
+    @media (max-width: 760px) { .platforms { grid-template-columns: 1fr; } }
+
+    /* CTA band */
+    .cta-band { background: linear-gradient(120deg, var(--pink), #7b2ff7); color: #fff; border-radius: 24px; padding: 56px 40px; text-align: center; }
+    .cta-band h2 { font-size: 32px; letter-spacing: -0.02em; margin-bottom: 12px; }
+    .cta-band p { opacity: .92; font-size: 17px; margin-bottom: 28px; }
+    .cta-band .btn { background: #fff; color: var(--pink); }
+    .cta-band .btn:hover { background: #f2f2f2; }
+
+    /* Footer */
+    footer { border-top: 1px solid var(--border); padding: 48px 0 36px; margin-top: 20px; }
+    .foot-grid { display: flex; justify-content: space-between; gap: 30px; flex-wrap: wrap; align-items: flex-start; }
+    .foot-links { display: flex; gap: 28px; flex-wrap: wrap; }
+    .foot-links a { color: var(--muted); font-size: 15px; }
+    .foot-links a:hover { color: var(--ink); }
+    .foot-bottom { color: var(--muted); font-size: 14px; margin-top: 28px; }
   </style>
 </head>
 <body>
-  <h1>AZLive</h1>
-  <p>Plateforme de live shopping pour les vendeurs à Madagascar.</p>
-  <p>Connectez TikTok et Facebook, gérez vos lives et capturez automatiquement les commandes « JP » depuis les commentaires.</p>
-  <ul>
-    <li><a href="terms.html">Conditions d'utilisation</a></li>
-    <li><a href="privacy.html">Politique de confidentialité</a></li>
-  </ul>
-  <p>Contact : contact@azlive.mg</p>
+  <header>
+    <div class="container nav">
+      <a class="brand" href="#"><span class="logo">AZ</span> AZLive</a>
+      <nav class="nav-links">
+        <a href="#features">Fonctionnalités</a>
+        <a href="#how">Comment ça marche</a>
+        <a href="#platforms">Plateformes</a>
+        <a href="#about">À propos</a>
+        <a href="#contact">Contact</a>
+      </nav>
+      <a class="btn" href="#contact">Demander une démo</a>
+    </div>
+  </header>
+
+  <main>
+    <!-- Hero -->
+    <section class="hero">
+      <div class="container hero-grid">
+        <div>
+          <span class="badge"><span class="dot"></span> Live shopping nouvelle génération</span>
+          <h1>Vendez en <span class="grad">direct</span>, capturez chaque commande automatiquement</h1>
+          <p class="lead">AZLive connecte vos lives TikTok et Facebook, suit les commentaires en temps réel et transforme automatiquement les « JP » de vos clients en commandes prêtes à traiter.</p>
+          <div class="hero-cta">
+            <a class="btn" href="#contact">Commencer</a>
+            <a class="btn ghost" href="#how">Voir comment ça marche</a>
+          </div>
+        </div>
+        <div class="hero-visual" aria-hidden="true">
+          <span class="live-pill"><span class="pulse"></span> En direct</span>
+          <div class="chat">
+            <div class="msg"><b>@hery_md</b> : Combien le sac rouge ?</div>
+            <div class="msg jp"><b>@narindra</b> : JP sac rouge 2
+              <div class="order-tag">✓ Commande créée — Sac rouge ×2</div>
+            </div>
+            <div class="msg"><b>@tantely</b> : Magnifique 😍</div>
+            <div class="msg jp"><b>@miora</b> : JP robe bleu M
+              <div class="order-tag">✓ Commande créée — Robe bleue (M)</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Features -->
+    <section class="block" id="features">
+      <div class="container">
+        <div class="section-head">
+          <span class="kicker">Fonctionnalités</span>
+          <h2>Tout pour gérer vos ventes en live</h2>
+          <p>Une plateforme pensée pour les vendeurs qui font du commerce en direct sur les réseaux sociaux.</p>
+        </div>
+        <div class="features">
+          <div class="card">
+            <div class="ico">🎥</div>
+            <h3>Lives multi-plateformes</h3>
+            <p>Diffusez et suivez vos lives TikTok et Facebook depuis un seul tableau de bord, en temps réel.</p>
+          </div>
+          <div class="card">
+            <div class="ico">💬</div>
+            <h3>Capture automatique « JP »</h3>
+            <p>Les commentaires « JP » de vos clients sont détectés et convertis instantanément en commandes.</p>
+          </div>
+          <div class="card">
+            <div class="ico">📦</div>
+            <h3>Gestion des commandes</h3>
+            <p>Suivez chaque commande, le client associé, le produit et le statut, sans ressaisie manuelle.</p>
+          </div>
+          <div class="card">
+            <div class="ico">👥</div>
+            <h3>Fiche clients</h3>
+            <p>Centralisez les coordonnées et l'historique d'achat de vos clients issus de TikTok et Facebook.</p>
+          </div>
+          <div class="card">
+            <div class="ico">🧾</div>
+            <h3>Factures & étiquettes</h3>
+            <p>Générez automatiquement les documents de commande et partagez-les à vos clients.</p>
+          </div>
+          <div class="card">
+            <div class="ico">🔒</div>
+            <h3>Connexion sécurisée</h3>
+            <p>Authentification officielle via TikTok et Facebook. Vos accès restent protégés côté serveur.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- How it works -->
+    <section class="block steps-wrap" id="how">
+      <div class="container">
+        <div class="section-head">
+          <span class="kicker">Comment ça marche</span>
+          <h2>De la connexion à la commande en 4 étapes</h2>
+        </div>
+        <div class="steps">
+          <div class="step">
+            <div class="num">1</div>
+            <h4>Connectez vos comptes</h4>
+            <p>Liez vos comptes TikTok et Facebook en quelques clics, en toute sécurité.</p>
+          </div>
+          <div class="step">
+            <div class="num">2</div>
+            <h4>Lancez votre live</h4>
+            <p>Démarrez votre live sur la plateforme de votre choix ; AZLive suit les commentaires.</p>
+          </div>
+          <div class="step">
+            <div class="num">3</div>
+            <h4>Les clients commandent</h4>
+            <p>Vos clients écrivent « JP » suivi du produit ; AZLive crée la commande automatiquement.</p>
+          </div>
+          <div class="step">
+            <div class="num">4</div>
+            <h4>Traitez et livrez</h4>
+            <p>Retrouvez toutes les commandes organisées, prêtes à confirmer et à expédier.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Platforms -->
+    <section class="block" id="platforms">
+      <div class="container">
+        <div class="section-head">
+          <span class="kicker">Intégrations</span>
+          <h2>Connecté à vos plateformes</h2>
+          <p>AZLive utilise les API officielles pour fonctionner avec vos comptes existants.</p>
+        </div>
+        <div class="platforms">
+          <div class="platform tiktok">
+            <div class="pico">TT</div>
+            <div>
+              <h3>TikTok</h3>
+              <p>Connexion via TikTok Login Kit et suivi des commentaires de vos lives TikTok en temps réel pour capturer les commandes.</p>
+            </div>
+          </div>
+          <div class="platform facebook">
+            <div class="pico">f</div>
+            <div>
+              <h3>Facebook</h3>
+              <p>Connexion via Facebook Login et gestion de vos Pages pour diffuser vos lives et traiter les commandes issues des commentaires.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- About -->
+    <section class="block steps-wrap" id="about">
+      <div class="container">
+        <div class="section-head">
+          <span class="kicker">À propos</span>
+          <h2>Conçu pour les vendeurs malgaches</h2>
+          <p>AZLive est une plateforme de live shopping développée à Madagascar pour aider les vendeurs à professionnaliser leurs ventes en direct sur les réseaux sociaux. Notre mission : faire gagner du temps aux commerçants en automatisant la partie la plus fastidieuse — la prise de commande pendant le live.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- CTA -->
+    <section class="block">
+      <div class="container">
+        <div class="cta-band">
+          <h2>Prêt à simplifier vos ventes en live ?</h2>
+          <p>Rejoignez les vendeurs qui automatisent leurs commandes avec AZLive.</p>
+          <a class="btn" href="#contact">Demander une démo</a>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer id="contact">
+    <div class="container">
+      <div class="foot-grid">
+        <div>
+          <a class="brand" href="#"><span class="logo">AZ</span> AZLive</a>
+          <p style="color: var(--muted); margin-top: 12px; max-width: 320px;">Plateforme de live shopping pour les vendeurs à Madagascar.</p>
+        </div>
+        <div class="foot-links">
+          <a href="#features">Fonctionnalités</a>
+          <a href="#how">Comment ça marche</a>
+          <a href="#platforms">Plateformes</a>
+          <a href="terms.html">Conditions d'utilisation</a>
+          <a href="privacy.html">Politique de confidentialité</a>
+          <a href="mailto:contact@azlive.mg">contact@azlive.mg</a>
+        </div>
+      </div>
+      <div class="foot-bottom">© 2026 AZLive. Tous droits réservés. · Madagascar</div>
+    </div>
+  </footer>
 </body>
 </html>
