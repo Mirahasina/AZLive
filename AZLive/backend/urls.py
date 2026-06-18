@@ -47,6 +47,7 @@ from .auth_views import (
 )
 from .webhooks import FacebookWebhookView, TikTokWebhookView
 from .live_views import LiveDemarrerAPIView, LiveArreterAPIView
+from .media_views import MediaMTXAuthAPIView
 
 urlpatterns = [
     # Auth
@@ -111,6 +112,9 @@ urlpatterns = [
     # Webhooks réseaux sociaux
     path('webhooks/facebook/', FacebookWebhookView.as_view(), name='webhook-facebook'),
     path('webhooks/tiktok/', TikTokWebhookView.as_view(), name='webhook-tiktok'),
+
+    # MediaMTX — authentification des publications WebRTC (diffusion navigateur)
+    path('media/auth/', MediaMTXAuthAPIView.as_view(), name='media-auth'),
 
     # Dashboard
     path('dashboard/stats/', DashboardStatsAPIView.as_view(), name='dashboard-stats'),

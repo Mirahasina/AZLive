@@ -10,6 +10,7 @@ from .facebook_live import (
 )
 from .facebook_oauth import FacebookOAuthError, facebook_configured
 from .facebook_webhooks import subscribe_vendeur_pages
+from .mediamtx import MediaMTXError, mediamtx_enabled, provision_live_path, teardown_live_path
 from .models import Live, PageFacebook
 from .tiktool_live import (
     build_tiktok_diffusion,
@@ -49,6 +50,36 @@ def _ensure_webhooks(vendeur):
         pass
 
 
+def _first_secure_stream_url(facebook_broadcasts: list[dict]) -> str | None:
+    for broadcast in facebook_broadcasts:
+        if broadcast.get('demo'):
+            continue
+        url = broadcast.get('secure_stream_url') or broadcast.get('stream_url')
+        if url:
+            return url
+    return None
+
+
+def _provision_webrtc(live: Live, facebook_broadcasts: list[dict]) -> dict | None:
+    """Prépare le pont navigateur -> Facebook via MediaMTX (si activé)."""
+    if not mediamtx_enabled() or live.vendeur.is_demo_mode:
+        return None
+    secure_stream_url = _first_secure_stream_url(facebook_broadcasts)
+    if not secure_stream_url:
+        return None
+    try:
+        ingest = provision_live_path(live, secure_stream_url)
+    except MediaMTXError as exc:
+        # Le live Facebook existe déjà ; on n'échoue pas, mais on signale l'absence de pont.
+        return {'status': 'error', 'detail': exc.message}
+    return {
+        'status': 'ready',
+        'path': ingest['path'],
+        'whip_url': ingest['whip_url'],
+        'publish_token': ingest['publish_token'],
+    }
+
+
 @transaction.atomic
 def demarrer_live(live: Live) -> Live:
     if live.statut == Live.STATUT_EN_COURS and live.diffusion_plateformes:
@@ -78,9 +109,12 @@ def demarrer_live(live: Live) -> Live:
 
     _ensure_webhooks(live.vendeur)
 
+    webrtc = _provision_webrtc(live, facebook_broadcasts)
+
     diffusion = {
         'facebook': facebook_broadcasts,
         'tiktok': tiktok_broadcast,
+        'webrtc': webrtc,
         'started_at': timezone.now().isoformat(),
     }
 
@@ -126,6 +160,11 @@ def arreter_live(live: Live, auto: bool = False) -> Live:
     if isinstance(tiktok, dict):
         tiktok = {**tiktok, 'status': 'ENDED', 'listener': 'stopped'}
         diffusion['tiktok'] = tiktok
+
+    webrtc = diffusion.get('webrtc')
+    if isinstance(webrtc, dict) and webrtc.get('path'):
+        teardown_live_path(webrtc['path'])
+        diffusion['webrtc'] = {**webrtc, 'status': 'stopped', 'publish_token': None}
 
     stop_tiktool_listener(live)
 
