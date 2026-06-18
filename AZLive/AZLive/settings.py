@@ -208,6 +208,20 @@ FACEBOOK_WEBHOOK_FIELDS = os.environ.get(
 # URL publique de l'API (liens facture / étiquette dans les messages privés)
 AZLIVE_PUBLIC_BASE_URL = os.environ.get('AZLIVE_PUBLIC_BASE_URL', 'http://localhost:8000')
 
+# MediaMTX — pont WebRTC (navigateur) -> RTMPS (Facebook Live).
+# Si MEDIAMTX_ENABLED est faux, le démarrage de live garde l'ancien comportement
+# (l'URL RTMP est seulement renvoyée, à utiliser dans OBS).
+MEDIAMTX_ENABLED = os.environ.get('MEDIAMTX_ENABLED', 'false').lower() in ('1', 'true', 'yes', 'on')
+# API de contrôle de MediaMTX (provisioning des paths). Vue depuis Django.
+MEDIAMTX_API_URL = os.environ.get('MEDIAMTX_API_URL', 'http://localhost:9997')
+# URL WHIP de base donnée au navigateur (doit être joignable par le client, en HTTPS en prod).
+MEDIAMTX_WHIP_BASE_URL = os.environ.get('MEDIAMTX_WHIP_BASE_URL', 'http://localhost:8889')
+# Hôte RTSP que ffmpeg (dans MediaMTX) utilise pour relire le flux publié.
+MEDIAMTX_RTSP_HOST = os.environ.get('MEDIAMTX_RTSP_HOST', 'localhost:8554')
+# Paramètres d'encodage ffmpeg pour le relais vers Facebook (H.264 + AAC requis).
+MEDIAMTX_FFMPEG_VIDEO_BITRATE = os.environ.get('MEDIAMTX_FFMPEG_VIDEO_BITRATE', '3000k')
+MEDIAMTX_FFMPEG_PRESET = os.environ.get('MEDIAMTX_FFMPEG_PRESET', 'veryfast')
+
 # TikTok OAuth (Login Kit) — Sandbox ou Production
 TIKTOK_CLIENT_KEY = os.environ.get('TIKTOK_CLIENT_KEY', '')
 TIKTOK_CLIENT_SECRET = os.environ.get('TIKTOK_CLIENT_SECRET', '')
