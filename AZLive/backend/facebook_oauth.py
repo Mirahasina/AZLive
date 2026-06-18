@@ -79,9 +79,15 @@ def build_oauth_url(state: str) -> str:
         'client_id': settings.FACEBOOK_APP_ID,
         'redirect_uri': settings.FACEBOOK_REDIRECT_URI,
         'state': state,
-        'scope': settings.FACEBOOK_OAUTH_SCOPES,
         'response_type': 'code',
     }
+    config_id = getattr(settings, 'FACEBOOK_CONFIG_ID', '')
+    if config_id:
+        # Facebook Login for Business : les permissions viennent de la configuration
+        params['config_id'] = config_id
+    else:
+        # Facebook Login classique : permissions via scope
+        params['scope'] = settings.FACEBOOK_OAUTH_SCOPES
     return f'https://www.facebook.com/{GRAPH_API_VERSION}/dialog/oauth?{urllib.parse.urlencode(params)}'
 
 
