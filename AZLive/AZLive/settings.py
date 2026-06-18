@@ -192,6 +192,9 @@ FACEBOOK_OAUTH_SCOPES = os.environ.get(
     'FACEBOOK_OAUTH_SCOPES',
     'email,public_profile,pages_show_list,pages_read_engagement,pages_manage_metadata,pages_manage_posts,pages_messaging',
 )
+# Facebook Login for Business (app de type Entreprise) : ID de configuration.
+# Si défini, l'URL OAuth utilise config_id au lieu de scope.
+FACEBOOK_CONFIG_ID = os.environ.get('FACEBOOK_CONFIG_ID', '')
 FACEBOOK_LIVE_STATUS = os.environ.get('FACEBOOK_LIVE_STATUS', 'LIVE_NOW')
 FACEBOOK_WEBHOOK_VERIFY_TOKEN = os.environ.get(
     'FACEBOOK_WEBHOOK_VERIFY_TOKEN',
