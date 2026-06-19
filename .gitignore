@@ -63,6 +63,10 @@ pytestdebug.log
 .DS_Store
 Thumbs.db
 
+# MediaMTX — binaire natif téléchargé localement (ne pas committer)
+mediamtx/mediamtx.exe
+mediamtx/*.zip
+
 .ipynb_checkpoints/
 
 .mypy_cache/

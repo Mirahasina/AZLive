@@ -6,7 +6,7 @@ from typing import Any
 from django.db import transaction
 from django.utils import timezone
 
-from .models import Client, Commande, Message, PageFacebook, Vendeur
+from .models import Client, Commande, Message, Paiement, PageFacebook, Vendeur
 from .serializers import CommandeSerializer
 
 
@@ -300,6 +300,36 @@ def resolve_page_for_commande(commande: Commande) -> PageFacebook | None:
     )
 
 
+CANCELLATION_PATTERNS = [
+    re.compile(r'\bannul', re.IGNORECASE),
+    re.compile(r'\bne\s+(?:veux|prends?|prend)\s+plus\b', re.IGNORECASE),
+    re.compile(r'\bplus\s+besoin\b', re.IGNORECASE),
+    re.compile(r'\bnon\s+merci\b', re.IGNORECASE),
+    re.compile(r'\btsy\s+(?:maka|haka|mila|te)\b', re.IGNORECASE),
+    re.compile(r'^\s*tsia\s*$', re.IGNORECASE),
+]
+
+
+def _is_cancellation(text: str) -> bool:
+    """Détecte une réponse de refus/annulation explicite (FR ou MG)."""
+    cleaned = (text or '').strip()
+    if not cleaned:
+        return False
+    return any(pattern.search(cleaned) for pattern in CANCELLATION_PATTERNS)
+
+
+def _ensure_paiement(commande: Commande) -> Paiement:
+    """Crée le règlement par défaut (paiement à la livraison, non payé) si absent."""
+    paiement, _ = Paiement.objects.get_or_create(
+        commande=commande,
+        defaults={
+            'methode': Paiement.METHODE_LIVRAISON,
+            'statut': Paiement.STATUT_NON_PAYE,
+        },
+    )
+    return paiement
+
+
 def _missing_confirmation_fields(client: Client) -> list[str]:
     missing = []
     if not client.nom or client.nom in {'Client Live', 'Client Facebook', 'Client TikTok'}:
@@ -364,7 +394,7 @@ def handle_client_reply(
         )
 
     client = commande.client
-    _apply_parsed_fields(client, parsed_data)
+    canal_message = canal or detect_client_channel(client)
 
     if inbound_text:
         Message.objects.create(
@@ -372,8 +402,29 @@ def handle_client_reply(
             contenu=inbound_text,
             numero_relance=0,
             direction=Message.DIRECTION_INBOUND,
-            canal=canal or detect_client_channel(client),
+            canal=canal_message,
         )
+
+    # Réponse négative explicite : on annule la commande (le stock éventuellement
+    # décrémenté est restauré et le suivant de la file est promu via Commande.save()).
+    if _is_cancellation(inbound_text):
+        commande.statut = Commande.STATUT_ANNULE
+        commande.save(update_fields=['statut'])
+
+        from .order_messaging import send_order_cancelled_message
+
+        outbound = send_order_cancelled_message(commande)
+        return {
+            'status': 'Commande annulée',
+            'annule': True,
+            'complet': False,
+            'commande': CommandeSerializer(commande).data,
+            'client': _client_snapshot(client),
+            'message_annulation': outbound.get('content'),
+            'message_delivery': outbound.get('delivery'),
+        }
+
+    _apply_parsed_fields(client, parsed_data)
 
     client.save(
         update_fields=[
@@ -401,8 +452,10 @@ def handle_client_reply(
             'message_delivery': outbound.get('delivery'),
         }
 
+    # Confirmation complète : statut + stock (décrément via Commande.save()) + règlement.
     commande.statut = Commande.STATUT_CONFIRME
     commande.save(update_fields=['statut'])
+    paiement = _ensure_paiement(commande)
 
     from .order_messaging import send_order_confirmed_message
 
@@ -412,6 +465,7 @@ def handle_client_reply(
         'status': 'Commande confirmée',
         'complet': True,
         'commande': CommandeSerializer(commande).data,
+        'reglement': {'methode': paiement.methode, 'statut': paiement.statut},
         'client': _client_snapshot(client),
         'parsed': parsed_data,
         'message_remerciement': outbound.get('content'),

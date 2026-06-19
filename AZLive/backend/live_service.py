@@ -8,6 +8,10 @@ from .facebook_live import (
     start_facebook_broadcasts,
     stop_facebook_broadcasts,
 )
+from .facebook_live_comments import (
+    start_facebook_comment_listener,
+    stop_facebook_comment_listener,
+)
 from .facebook_oauth import FacebookOAuthError, facebook_configured
 from .facebook_webhooks import subscribe_vendeur_pages
 from .mediamtx import MediaMTXError, mediamtx_enabled, provision_live_path, teardown_live_path
@@ -143,6 +147,10 @@ def demarrer_live(live: Live) -> Live:
             live.diffusion_plateformes = diffusion
             live.save(update_fields=['diffusion_plateformes'])
 
+    # Capture automatique des commentaires JP du Live Facebook (polling API live comments).
+    if facebook_broadcasts and facebook_configured() and not live.vendeur.is_demo_mode:
+        start_facebook_comment_listener(live, facebook_broadcasts, pages)
+
     return live
 
 
@@ -167,6 +175,7 @@ def arreter_live(live: Live, auto: bool = False) -> Live:
         diffusion['webrtc'] = {**webrtc, 'status': 'stopped', 'publish_token': None}
 
     stop_tiktool_listener(live)
+    stop_facebook_comment_listener(live)
 
     diffusion['facebook'] = facebook_broadcasts
     diffusion['stopped_at'] = timezone.now().isoformat()
