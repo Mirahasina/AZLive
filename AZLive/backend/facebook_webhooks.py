@@ -136,6 +136,7 @@ def process_facebook_webhook_payload(payload: dict[str, Any]) -> dict[str, Any]:
                 channel='Facebook',
                 page_id=comment.get('page_id'),
                 id_field='facebook_id',
+                comment_id=comment.get('comment_id'),
             )
             results.append({**result, 'comment_id': comment.get('comment_id')})
         except JPCaptureError as exc:

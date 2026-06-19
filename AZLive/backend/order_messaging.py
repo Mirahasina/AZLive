@@ -3,7 +3,7 @@ from typing import Any
 
 from django.conf import settings
 
-from .facebook_messenger import send_facebook_private_message
+from .facebook_messenger import send_facebook_private_message, send_facebook_private_reply
 from .models import Commande, Message
 
 logger = logging.getLogger(__name__)
@@ -40,21 +40,29 @@ def _record_outbound(commande: Commande, content: str, canal: str) -> Message:
     )
 
 
-def _deliver_private_message(commande: Commande, content: str) -> dict[str, Any]:
+def _deliver_private_message(
+    commande: Commande,
+    content: str,
+    comment_id: str | None = None,
+) -> dict[str, Any]:
     canal = _detect_channel(commande)
     delivery = {'channel': canal, 'sent': False, 'mock': True}
 
-    if canal == Message.CANAL_FACEBOOK and commande.client.facebook_id:
-        page = None
+    if canal == Message.CANAL_FACEBOOK and (commande.client.facebook_id or comment_id):
         from .order_confirmation import resolve_page_for_commande
 
         page = resolve_page_for_commande(commande)
         if page:
-            result = send_facebook_private_message(
-                page,
-                commande.client.facebook_id,
-                content,
-            )
+            if comment_id:
+                # Réponse privée à un commentateur (live/post) : seul canal possible
+                # car l'id du commentaire n'est pas un PSID Messenger.
+                result = send_facebook_private_reply(page, comment_id, content)
+            else:
+                result = send_facebook_private_message(
+                    page,
+                    commande.client.facebook_id,
+                    content,
+                )
             delivery.update(result)
             delivery['mock'] = False
 
@@ -154,8 +162,26 @@ def build_thank_you_message(commande: Commande) -> str:
     )
 
 
-def send_jp_confirmation_message(commande: Commande) -> dict[str, Any]:
+def send_jp_confirmation_message(
+    commande: Commande,
+    comment_id: str | None = None,
+) -> dict[str, Any]:
     content = build_jp_confirmation_message(commande)
+    delivery = _deliver_private_message(commande, content, comment_id=comment_id)
+    return {'content': content, 'delivery': delivery}
+
+
+def build_order_cancelled_message(commande: Commande) -> str:
+    client = commande.client
+    produit = commande.produit
+    return (
+        f"Ekena {client.nom}, nofoanana ny baikonao '{produit.nom}' (#{commande.id}). "
+        "Raha diso izany na te-hanao baiko vaovao ianao, mamaly fotsiny eto. Misaotra!"
+    )
+
+
+def send_order_cancelled_message(commande: Commande) -> dict[str, Any]:
+    content = build_order_cancelled_message(commande)
     delivery = _deliver_private_message(commande, content)
     return {'content': content, 'delivery': delivery}
 

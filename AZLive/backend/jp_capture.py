@@ -2,10 +2,9 @@ from django.db import models, transaction
 from django.db.models import Max
 
 from .ai import JPCommentAnalyzer
-from .models import Client, Commande, Live, Message, PageFacebook, Produit, Vendeur
+from .models import Client, Commande, Live, PageFacebook, Produit, Vendeur
 from .order_messaging import send_jp_confirmation_message
 from .serializers import CommandeSerializer
-from .services import MessagingService
 
 
 class JPCaptureError(Exception):
@@ -16,8 +15,16 @@ class JPCaptureError(Exception):
         self.payload = payload or {}
 
 
-def create_jp_commande(client, produit, live=None, canal=''):
-    """Crée une commande JP avec ordre atomique et notifications associées."""
+def create_jp_commande(client, produit, live=None, canal='', comment_id=None, variante=None):
+    """Crée une commande JP (ordre atomique) puis envoie le message au client.
+
+    Le contenu (confirmation si 1er, liste d'attente sinon) est construit et livré par
+    send_jp_confirmation_message, qui enregistre aussi le message sortant. Pour un
+    commentateur Facebook, comment_id permet la réponse privée (private_replies).
+    La variante (déduite du code JP) est rattachée afin que le décrément de stock à la
+    confirmation porte sur la bonne déclinaison. L'envoi (appel réseau) est fait hors
+    transaction pour ne pas garder le verrou.
+    """
     with transaction.atomic():
         max_order = (
             Commande.objects.select_for_update()
@@ -29,29 +36,27 @@ def create_jp_commande(client, produit, live=None, canal=''):
         commande = Commande.objects.create(
             client=client,
             produit=produit,
+            variante=variante,
             ordre_jp=ordre_jp,
             statut=Commande.STATUT_JP_CAPTURE,
             live=live,
         )
 
-        if ordre_jp == 1:
-            outbound = send_jp_confirmation_message(commande)
-            message_content = outbound['content']
-        else:
-            message_content = (
-                f"Salama {client.nom}, tafiditra ao anatin'ny lisitra miandry (liste d'attente) ho an'ny '{produit.nom}' ianao (Laharana faha-{ordre_jp}). "
-                "Hampilazainay ianao raha misy fahafahana avy amin'ireo nialoha anao."
-            )
-            MessagingService.send_waiting_list_message(client, produit, ordre_jp, commande.id)
+    send_jp_confirmation_message(commande, comment_id=comment_id)
+    return commande
 
-        Message.objects.create(
-            commande=commande,
-            contenu=message_content,
-            numero_relance=0,
-            direction=Message.DIRECTION_OUTBOUND,
-            canal=canal,
-        )
-        return commande
+
+def resolve_variante_for_analysis(produit, analysis):
+    """Retrouve la variante du produit correspondant au code JP / variante détecté(e)."""
+    code_jp = analysis.get('code_jp')
+    if code_jp:
+        variante = produit.variantes.filter(code_jp__iexact=code_jp).first()
+        if variante:
+            return variante
+    variante_id = analysis.get('variante_id')
+    if variante_id:
+        return produit.variantes.filter(id=variante_id).first()
+    return None
 
 
 def normalize_tiktok_username(username: str | None) -> str:
@@ -144,6 +149,7 @@ def process_social_comment(
     vendeur=None,
     live=None,
     id_field: str = 'facebook_id',
+    comment_id: str | None = None,
 ):
     if not sender_id or not comment_text:
         raise JPCaptureError(
@@ -189,7 +195,10 @@ def process_social_comment(
         client.nom = sender_name
         client.save(update_fields=['nom'])
 
-    commande = create_jp_commande(client, produit, live=live, canal=channel)
+    variante = resolve_variante_for_analysis(produit, analysis)
+    commande = create_jp_commande(
+        client, produit, live=live, canal=channel, comment_id=comment_id, variante=variante
+    )
     return {
         'status': 'JP capturé avec succès',
         'channel': channel,
