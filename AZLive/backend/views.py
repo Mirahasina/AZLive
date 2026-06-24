@@ -97,7 +97,20 @@ class CommandeListCreateView(generics.ListCreateAPIView):
     serializer_class = CommandeSerializer
 
     def get_queryset(self):
-        queryset = Commande.objects.select_related('client', 'produit', 'variante', 'paiement', 'livraison').all()
+        # select_related/prefetch_related : évite les requêtes N+1 lors de la sérialisation
+        # imbriquée (client, produit + variantes/images, live + dressing), notamment pour la
+        # vue Clients qui agrège toutes les commandes d'un vendeur (?vendeur_id=).
+        queryset = (
+            Commande.objects
+            .select_related('client', 'produit', 'variante', 'paiement', 'livraison', 'live')
+            .prefetch_related(
+                'produit__variantes',
+                'produit__images',
+                'live__produits_dressing__variantes',
+                'live__produits_dressing__images',
+            )
+            .all()
+        )
         live_id = self.request.query_params.get('live_id')
         client_id = self.request.query_params.get('client_id')
         produit_id = self.request.query_params.get('produit_id')
