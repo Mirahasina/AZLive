@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from .models import Client, Commande, Livraison, Livreur, Paiement, Produit, ProduitImage, Vendeur, Message, Collaborateur, Live, Variante
+from .models import Client, Commande, Livraison, Livreur, Paiement, Produit, ProduitImage, Vendeur, Message, Collaborateur, Live, LiveCodeJP, Variante
 
 
 @admin.register(Vendeur)
@@ -75,4 +75,11 @@ class VarianteAdmin(admin.ModelAdmin):
     list_display = ('produit', 'code_jp', 'taille', 'couleur', 'prix_unitaire', 'stock')
     list_filter = ('taille', 'couleur')
     search_fields = ('code_jp', 'produit__nom')
+
+
+@admin.register(LiveCodeJP)
+class LiveCodeJPAdmin(admin.ModelAdmin):
+    list_display = ('live', 'code', 'variante')
+    list_filter = ('live',)
+    search_fields = ('code', 'variante__produit__nom')
 

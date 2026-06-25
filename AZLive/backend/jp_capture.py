@@ -2,7 +2,8 @@ from django.db import models, transaction
 from django.db.models import Max
 
 from .ai import JPCommentAnalyzer
-from .models import Client, Commande, Live, PageFacebook, Produit, Vendeur
+from .jp_codes import normalize_jp_code
+from .models import Client, Commande, Live, LiveCodeJP, PageFacebook, Produit, Vendeur
 from .order_messaging import send_jp_confirmation_message
 from .serializers import CommandeSerializer
 
@@ -50,9 +51,10 @@ def create_jp_commande(client, produit, live=None, canal='', comment_id=None, va
             commande = existing
             reused = True
         else:
+            # L'ordre suit le scope de la file d'attente / de l'éligibilité : (produit, variante).
             max_order = (
                 Commande.objects.select_for_update()
-                .filter(produit=produit)
+                .filter(produit=produit, variante=variante)
                 .aggregate(max_ordre=Max('ordre_jp'))['max_ordre']
                 or 0
             )
@@ -71,11 +73,56 @@ def create_jp_commande(client, produit, live=None, canal='', comment_id=None, va
     return commande
 
 
-def resolve_variante_for_analysis(produit, analysis):
-    """Retrouve la variante du produit correspondant au code JP / variante détecté(e)."""
-    code_jp = analysis.get('code_jp')
-    if code_jp:
-        variante = produit.variantes.filter(code_jp__iexact=code_jp).first()
+def _candidate_code(analysis) -> str:
+    """Code JP candidat (nu) déduit du commentaire.
+
+    On privilégie le texte tapé après « JP » (product_query) puis le code détecté.
+    normalize_jp_code retire un éventuel préfixe « JP » résiduel (gère l'ancien
+    « JP JPNOIR » -> « NOIR »).
+    """
+    for key in ('product_query', 'code_jp', 'raw_text'):
+        candidate = normalize_jp_code(analysis.get(key))
+        if candidate:
+            return candidate
+    return ''
+
+
+def resolve_live_variante(live, analysis, vendeur=None):
+    """Résout la variante via la correspondance code↔variante PROPRE au live.
+
+    Prioritaire sur la détection par nom : si le code tapé correspond à un code
+    attribué dans ce live, c'est cette variante (et donc ce produit) qui prime.
+    """
+    code = _candidate_code(analysis)
+    if live is None or not code:
+        return None
+    queryset = LiveCodeJP.objects.filter(live=live, code__iexact=code).select_related(
+        'variante', 'variante__produit'
+    )
+    if vendeur:
+        queryset = queryset.filter(variante__produit__vendeur=vendeur)
+    mapping = queryset.first()
+    return mapping.variante if mapping else None
+
+
+def resolve_variante_for_analysis(produit, analysis, live=None):
+    """Retrouve la variante du produit correspondant au code JP / variante détecté(e).
+
+    Quand un live est connu, on tente d'abord la correspondance propre au live.
+    """
+    code = _candidate_code(analysis)
+    if live is not None and code:
+        mapping = (
+            LiveCodeJP.objects.filter(
+                live=live, variante__produit=produit, code__iexact=code
+            )
+            .select_related('variante')
+            .first()
+        )
+        if mapping:
+            return mapping.variante
+    if code:
+        variante = produit.variantes.filter(code_jp__iexact=code).first()
         if variante:
             return variante
     variante_id = analysis.get('variante_id')
@@ -203,13 +250,19 @@ def process_social_comment(
             'ai_analysis': analysis,
         }
 
-    produit = find_produit_for_comment(analysis, vendeur=vendeur, live=live)
-    if not produit:
-        raise JPCaptureError(
-            'Produit introuvable pour ce commentaire.',
-            status_code=404,
-            payload={'ai_analysis': analysis, 'channel': channel},
-        )
+    # La correspondance code↔variante propre au live prime sur la détection par nom.
+    variante = resolve_live_variante(live, analysis, vendeur=vendeur)
+    if variante is not None:
+        produit = variante.produit
+    else:
+        produit = find_produit_for_comment(analysis, vendeur=vendeur, live=live)
+        if not produit:
+            raise JPCaptureError(
+                'Produit introuvable pour ce commentaire.',
+                status_code=404,
+                payload={'ai_analysis': analysis, 'channel': channel},
+            )
+        variante = resolve_variante_for_analysis(produit, analysis, live=live)
 
     lookup = {id_field: sender_id}
     defaults = {'nom': sender_name, 'telephone': '', 'adresse': ''}
@@ -219,8 +272,6 @@ def process_social_comment(
     if not created and client.nom in placeholder_names and sender_name not in placeholder_names:
         client.nom = sender_name
         client.save(update_fields=['nom'])
-
-    variante = resolve_variante_for_analysis(produit, analysis)
     commande = create_jp_commande(
         client,
         produit,

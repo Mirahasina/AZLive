@@ -23,6 +23,7 @@ from .views import (
     DashboardStatsAPIView,
     LiveListCreateView,
     LiveDetailView,
+    LiveCodesAPIView,
     CollaborateurListCreateView,
     CollaborateurDetailView,
     VarianteListCreateView,
@@ -82,6 +83,7 @@ urlpatterns = [
     # Lives / Sessions
     path('lives/', LiveListCreateView.as_view(), name='live-list-create'),
     path('lives/<int:pk>/', LiveDetailView.as_view(), name='live-detail'),
+    path('lives/<int:pk>/codes/', LiveCodesAPIView.as_view(), name='live-codes'),
     path('lives/<int:pk>/demarrer/', LiveDemarrerAPIView.as_view(), name='live-demarrer'),
     path('lives/<int:pk>/arreter/', LiveArreterAPIView.as_view(), name='live-arreter'),
 

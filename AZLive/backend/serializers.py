@@ -12,6 +12,7 @@ from .models import (
     Message,
     Collaborateur,
     Live,
+    LiveCodeJP,
     Variante,
     PageFacebook,
     ParametresPlateforme,
@@ -57,7 +58,7 @@ class VarianteSerializer(serializers.ModelSerializer):
         if produit and taille and couleur:
             validate_variante_uniqueness(produit, taille, couleur, exclude_pk=getattr(self.instance, 'pk', None))
         if code_jp is not None:
-            validate_code_jp_uniqueness(code_jp, exclude_pk=getattr(self.instance, 'pk', None))
+            validate_code_jp_uniqueness(code_jp, produit=produit, exclude_pk=getattr(self.instance, 'pk', None))
         return attrs
 
 
@@ -79,7 +80,7 @@ class VarianteNestedSerializer(serializers.ModelSerializer):
         if produit and taille and couleur:
             validate_variante_uniqueness(produit, taille, couleur, exclude_pk=getattr(self.instance, 'pk', None))
         if code_jp is not None:
-            validate_code_jp_uniqueness(code_jp, exclude_pk=getattr(self.instance, 'pk', None))
+            validate_code_jp_uniqueness(code_jp, produit=produit, exclude_pk=getattr(self.instance, 'pk', None))
         return attrs
 
 
@@ -283,6 +284,14 @@ def _commande_prix(commande):
     return float(commande.get_prix_total())
 
 
+class LiveCodeJPSerializer(serializers.ModelSerializer):
+    produit_id = serializers.IntegerField(source='variante.produit_id', read_only=True)
+
+    class Meta:
+        model = LiveCodeJP
+        fields = ['id', 'variante', 'produit_id', 'code']
+
+
 class LiveSerializer(serializers.ModelSerializer):
     chiffre_affaires = serializers.SerializerMethodField()
     nb_fiches = serializers.SerializerMethodField()
@@ -291,13 +300,14 @@ class LiveSerializer(serializers.ModelSerializer):
     produits_dressing_ids = serializers.PrimaryKeyRelatedField(
         queryset=Produit.objects.all(), source='produits_dressing', many=True, write_only=True, required=False
     )
+    codes_jp = LiveCodeJPSerializer(many=True, read_only=True)
 
     class Meta:
         model = Live
         fields = [
             'id', 'titre', 'date_live', 'statut', 'vendeur', 'operateur',
             'chiffre_affaires', 'nb_fiches', 'operateur_nom',
-            'produits_dressing', 'produits_dressing_ids', 'pages_facebook',
+            'produits_dressing', 'produits_dressing_ids', 'codes_jp', 'pages_facebook',
             'diffusion_plateformes', 'date_debut', 'date_fin',
         ]
 

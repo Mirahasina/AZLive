@@ -85,9 +85,17 @@ class JPCommentAnalyzer:
         if not query:
             return None
 
-        variante = Variante.objects.filter(code_jp__iexact=query.strip()).select_related('produit').first()
-        if variante:
-            return variante.produit, variante
+        from .jp_codes import normalize_jp_code
+
+        code = normalize_jp_code(query)
+        if code:
+            variante = (
+                Variante.objects.filter(code_jp__iexact=code)
+                .select_related('produit')
+                .first()
+            )
+            if variante:
+                return variante.produit, variante
 
         variante_qs = Variante.objects.select_related('produit').filter(
             models.Q(code_jp__icontains=query)

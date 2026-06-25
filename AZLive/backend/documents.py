@@ -6,6 +6,7 @@ from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import mm
 from reportlab.pdfgen import canvas
 
+from .jp_codes import code_for_commande, format_jp_code
 from .models import Commande
 
 
@@ -58,7 +59,7 @@ def build_facture_pdf(commande: Commande) -> bytes:
     pdf.drawString(40, y, f'{commande.produit.nom}')
     y -= 16
     if variante:
-        pdf.drawString(40, y, f'Taille {variante.taille} — Couleur {variante.couleur} — Code JP {variante.code_jp}')
+        pdf.drawString(40, y, f'Taille {variante.taille} — Couleur {variante.couleur} — Code {format_jp_code(code_for_commande(commande))}')
         y -= 16
     pdf.drawString(40, y, f'Prix unitaire : {_format_price(prix)}')
     y -= 16
@@ -90,7 +91,8 @@ def build_etiquette_livraison_pdf(commande: Commande) -> bytes:
     pdf.drawCentredString(page_width / 2, page_height - 12 * mm, 'AZLive — ETIQUETTE LIVRAISON')
 
     pdf.setFont('Helvetica-Bold', 10)
-    code = variante.code_jp if variante else f'CMD-{commande.id}'
+    bare_code = code_for_commande(commande)
+    code = format_jp_code(bare_code) if bare_code else f'CMD-{commande.id}'
     pdf.drawCentredString(page_width / 2, page_height - 20 * mm, code)
 
     pdf.setFont('Helvetica', 9)

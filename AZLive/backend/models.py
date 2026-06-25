@@ -135,7 +135,10 @@ class Variante(models.Model):
     couleur = models.CharField(max_length=50)
     prix_unitaire = models.DecimalField(max_digits=10, decimal_places=2)
     stock = models.IntegerField(default=0)
-    code_jp = models.CharField(max_length=50, unique=True)
+    # Code « catalogue » par défaut (nu, sans préfixe « JP »). N'est plus unique
+    # globalement : l'unicité réelle est portée par live via LiveCodeJP. Sert de repli
+    # quand un live n'a pas attribué de code spécifique (ou hors live).
+    code_jp = models.CharField(max_length=50, blank=True, default='')
 
     class Meta:
         constraints = [
@@ -149,10 +152,45 @@ class Variante(models.Model):
         return f"{self.produit.nom} - {self.couleur} - {self.taille} ({self.code_jp})"
 
     def clean(self):
+        from .jp_codes import normalize_jp_code
         from .validators import validate_code_jp_uniqueness, validate_variante_uniqueness
 
+        self.code_jp = normalize_jp_code(self.code_jp)
         validate_variante_uniqueness(self.produit, self.taille, self.couleur, exclude_pk=self.pk)
-        validate_code_jp_uniqueness(self.code_jp, exclude_pk=self.pk)
+        validate_code_jp_uniqueness(self.code_jp, produit=self.produit, exclude_pk=self.pk)
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        super().save(*args, **kwargs)
+
+
+class LiveCodeJP(models.Model):
+    """Correspondance code JP -> variante, propre à un live.
+
+    Un même code est unique à l'intérieur d'un live mais réutilisable d'un live à
+    l'autre (sans écraser les autres lives). Le code est stocké nu (sans préfixe « JP »).
+    """
+    live = models.ForeignKey('Live', on_delete=models.CASCADE, related_name='codes_jp')
+    variante = models.ForeignKey(Variante, on_delete=models.CASCADE, related_name='codes_live')
+    code = models.CharField(max_length=50)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=['live', 'code'], name='unique_code_per_live'),
+            models.UniqueConstraint(fields=['live', 'variante'], name='unique_variante_per_live'),
+        ]
+
+    def __str__(self):
+        return f"Live #{self.live_id} — {self.code} → {self.variante_id}"
+
+    def clean(self):
+        from .jp_codes import normalize_jp_code
+
+        self.code = normalize_jp_code(self.code)
+        if not self.code:
+            from django.core.exceptions import ValidationError
+
+            raise ValidationError('Le code JP est obligatoire.')
 
     def save(self, *args, **kwargs):
         self.full_clean()
