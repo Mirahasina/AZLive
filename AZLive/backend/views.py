@@ -2,7 +2,8 @@ import re
 from datetime import timedelta
 
 from django.db import models, transaction
-from django.db.models import Max, Sum, Count
+from django.db.models import Max, Sum, Count, Value
+from django.db.models.functions import Coalesce
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework import generics, status
@@ -645,14 +646,14 @@ class DashboardStatsAPIView(APIView):
 
         taux_confirmation = (confirmed_count / total_jps * 100) if total_jps > 0 else 0
 
-        chiffre_affaires = sum(float(cmd.get_prix_unitaire()) for cmd in confirmed_orders)
+        chiffre_affaires = sum(float(cmd.get_prix_total()) for cmd in confirmed_orders)
 
         commission_rate = float(ParametresPlateforme.get_current().taux_commission)
         montant_a_reverser = float(chiffre_affaires) * (1.0 - commission_rate)
 
         best_sellers = (
             commandes_query.values('produit__nom')
-            .annotate(total_ventes=Count('id'))
+            .annotate(total_ventes=Sum(Coalesce('quantite', Value(1))))
             .order_by('-total_ventes')[:5]
         )
         best_sellers_list = [{'produit_nom': item['produit__nom'], 'ventes': item['total_ventes']} for item in best_sellers]
@@ -667,7 +668,7 @@ class DashboardStatsAPIView(APIView):
         monthly_chart_data = []
         for m_num, m_name in months.items():
             month_orders = confirmed_orders.filter(date_creation__month=m_num)
-            revenue = sum(float(cmd.get_prix_unitaire()) for cmd in month_orders)
+            revenue = sum(float(cmd.get_prix_total()) for cmd in month_orders)
             monthly_chart_data.append({
                 'mois': m_name,
                 'chiffre_affaires': float(revenue)
@@ -676,7 +677,7 @@ class DashboardStatsAPIView(APIView):
         best_sellers_ranking = []
         best_sellers_query = (
             confirmed_orders.values('variante_id', 'produit_id')
-            .annotate(units_sold=Count('id'))
+            .annotate(units_sold=Sum(Coalesce('quantite', Value(1))))
             .order_by('-units_sold')[:5]
         )
         for index, item in enumerate(best_sellers_query, start=1):
@@ -803,7 +804,7 @@ class ClientStatsAPIView(APIView):
 
         total_clients = clients_query.count()
         avg_order_price = (
-            sum(float(cmd.get_prix_unitaire()) for cmd in commandes_query) / commandes_query.count()
+            sum(float(cmd.get_prix_total()) for cmd in commandes_query) / commandes_query.count()
             if commandes_query.count() else 0
         )
 

@@ -53,6 +53,8 @@ def build_facture_pdf(commande: Commande) -> bytes:
     y -= 18
     pdf.setFont('Helvetica', 11)
     prix = variante.prix_unitaire if variante else commande.get_prix_unitaire()
+    quantite = commande.quantite_effective
+    total = prix * quantite
     pdf.drawString(40, y, f'{commande.produit.nom}')
     y -= 16
     if variante:
@@ -60,11 +62,13 @@ def build_facture_pdf(commande: Commande) -> bytes:
         y -= 16
     pdf.drawString(40, y, f'Prix unitaire : {_format_price(prix)}')
     y -= 16
+    pdf.drawString(40, y, f'Quantité : {quantite}')
+    y -= 16
     pdf.drawString(40, y, f'Ordre JP : #{commande.ordre_jp}')
     y -= 24
 
     pdf.setFont('Helvetica-Bold', 14)
-    pdf.drawString(40, y, f'TOTAL : {_format_price(prix)}')
+    pdf.drawString(40, y, f'TOTAL : {_format_price(total)}')
     y -= 30
     pdf.setFont('Helvetica-Oblique', 9)
     pdf.drawString(40, y, 'Merci pour votre achat live — AZLive Madagascar')
@@ -93,11 +97,14 @@ def build_etiquette_livraison_pdf(commande: Commande) -> bytes:
     produit_line = commande.produit.nom.upper()
     if variante:
         produit_line += f' ({variante.couleur}, {variante.taille})'
+    if commande.quantite_effective > 1:
+        produit_line += f' x{commande.quantite_effective}'
     pdf.drawCentredString(page_width / 2, page_height - 27 * mm, produit_line[:40])
 
     pdf.setFont('Helvetica-Bold', 10)
     prix = variante.prix_unitaire if variante else commande.get_prix_unitaire()
-    pdf.drawCentredString(page_width / 2, page_height - 34 * mm, _format_price(prix))
+    total = prix * commande.quantite_effective
+    pdf.drawCentredString(page_width / 2, page_height - 34 * mm, _format_price(total))
 
     pdf.setFont('Helvetica', 8)
     pdf.drawCentredString(page_width / 2, page_height - 40 * mm, f'#{commande.id} — {commande.client.nom[:28]}')

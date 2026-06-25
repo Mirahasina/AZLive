@@ -969,6 +969,7 @@ class OrderConfirmationFlowTest(TestCase):
             'Bypass',
             '12 mai',
             '14h',
+            '2',  # quantité demandée pendant la collecte
         ]
         for index, text in enumerate(steps):
             response = self.client.post(
@@ -989,7 +990,7 @@ class OrderConfirmationFlowTest(TestCase):
         response = self.client.post(
             f'/api/commandes/{self.commande.id}/confirmer/',
             {
-                'message_text': 'Lova\n0341122334\nBypass\n12 mai\n14h',
+                'message_text': 'Lova\n0341122334\nBypass\n12 mai\n14h\n2',
                 'channel': 'TikTok',
             },
             content_type='application/json',
@@ -1031,7 +1032,7 @@ class OrderConfirmationFlowTest(TestCase):
                     'timestamp': 1234567890,
                     'message': {
                         'mid': 'mid.1',
-                        'text': 'Nom : Marie\nFinday : 0349988776\nAdiresy : Toamasina\nDaty : 25/06/2026\nOra : 15h30',
+                        'text': 'Nom : Marie\nFinday : 0349988776\nAdiresy : Toamasina\nDaty : 25/06/2026\nOra : 15h30\nQuantité : 1',
                     },
                 }],
             }],
@@ -1052,4 +1053,223 @@ class OrderConfirmationFlowTest(TestCase):
         self.assertTrue(response.json()['results'][0].get('complet'))
         self.commande.refresh_from_db()
         self.assertEqual(self.commande.statut, Commande.STATUT_CONFIRME)
+
+
+class QuantiteEtAnnulationTest(TestCase):
+    def setUp(self):
+        self.vendeur = Vendeur.objects.create(nom='Vendeur', contact='0341234567')
+        self.produit = create_test_produit(self.vendeur, nom='Robe Noire', variante={
+            'taille': 'M', 'couleur': 'Noire', 'prix_unitaire': '45000.00', 'stock': 10, 'code_jp': 'JPNOIR',
+        })
+        self.variante = self.produit.variantes.first()
+
+    def _capture(self, comment_text, sender_id='tt_qty', sender_name='Acheteur'):
+        from .jp_capture import process_social_comment
+
+        return process_social_comment(
+            sender_id=sender_id,
+            sender_name=sender_name,
+            comment_text=comment_text,
+            channel='TikTok',
+            vendeur=self.vendeur,
+            id_field='tiktok_id',
+        )
+
+    def _confirm(self, commande_id, message_text):
+        return self.client.post(
+            f'/api/commandes/{commande_id}/confirmer/',
+            {'message_text': message_text, 'channel': 'TikTok'},
+            content_type='application/json',
+        )
+
+    def test_quantite_pas_lue_dans_le_commentaire(self):
+        # Même si le commentaire contient un nombre, on ne fixe PAS la quantité au JP.
+        result = self._capture('JP Robe Noire 3')
+        commande = Commande.objects.get(id=result['commande']['id'])
+        self.assertIsNone(commande.quantite)
+
+    def test_quantite_demandee_pendant_la_collecte(self):
+        result = self._capture('JP Robe Noire')
+        commande_id = result['commande']['id']
+        # Tant que la quantité n'est pas donnée, la commande n'est pas confirmée.
+        partial = self._confirm(commande_id, 'Lova\n0341122334\nBypass\n12 mai\n14h')
+        self.assertEqual(partial.status_code, 200)
+        self.assertFalse(partial.json()['complet'])
+        self.assertIn('quantite', partial.json()['champs_manquants'])
+        # Le client répond la quantité → confirmation.
+        final = self._confirm(commande_id, '3')
+        self.assertTrue(final.json()['complet'])
+        commande = Commande.objects.get(id=commande_id)
+        self.assertEqual(commande.quantite, 3)
+        self.assertEqual(commande.statut, Commande.STATUT_CONFIRME)
+
+    def test_doublon_meme_article_reutilise_la_commande(self):
+        first = self._capture('JP Robe Noire')
+        second = self._capture('JP Robe Noire')
+        self.assertEqual(first['commande']['id'], second['commande']['id'])
+        self.assertEqual(Commande.objects.filter(client__tiktok_id='tt_qty').count(), 1)
+
+    def test_stock_decremente_selon_la_quantite(self):
+        result = self._capture('JP Robe Noire')
+        commande_id = result['commande']['id']
+        response = self._confirm(commande_id, 'Lova\n0341122334\nBypass\n12 mai\n14h\n3')
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()['complet'])
+        self.variante.refresh_from_db()
+        self.assertEqual(self.variante.stock, 7)
+
+    def test_annulation_apres_confirmation_restaure_le_stock(self):
+        result = self._capture('JP Robe Noire')
+        commande_id = result['commande']['id']
+        self._confirm(commande_id, 'Lova\n0341122334\nBypass\n12 mai\n14h\n2')
+        self.variante.refresh_from_db()
+        self.assertEqual(self.variante.stock, 8)
+
+        response = self._confirm(commande_id, 'Annuler')
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json().get('annule'))
+        commande = Commande.objects.get(id=commande_id)
+        self.assertEqual(commande.statut, Commande.STATUT_ANNULE)
+        self.variante.refresh_from_db()
+        self.assertEqual(self.variante.stock, 10)
+
+    def test_annulation_en_malgache(self):
+        result = self._capture('JP Robe Noire')
+        commande_id = result['commande']['id']
+        self._confirm(commande_id, 'Lova\n0341122334\nBypass\n12 mai\n14h\n1')
+        self.assertEqual(Commande.objects.get(id=commande_id).statut, Commande.STATUT_CONFIRME)
+
+        response = self._confirm(commande_id, 'Foano ny baiko')
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json().get('annule'))
+        self.assertEqual(Commande.objects.get(id=commande_id).statut, Commande.STATUT_ANNULE)
+
+    def test_infos_en_desordre_completent_la_commande(self):
+        # Nom placeholder (aucun vrai nom fourni par la plateforme) → le client doit le donner.
+        result = self._capture('JP Robe Noire', sender_name='Client TikTok')
+        commande_id = result['commande']['id']
+        # Ordre volontairement mélangé : téléphone, nom, adresse, date, heure, quantité.
+        for text in ('0341122334', 'Lova', 'Bypass', '12 mai', '14h', '2'):
+            response = self._confirm(commande_id, text)
+            self.assertEqual(response.status_code, 200)
+        commande = Commande.objects.get(id=commande_id)
+        self.assertEqual(commande.statut, Commande.STATUT_CONFIRME)
+        self.assertEqual(commande.client.nom, 'Lova')
+        self.assertEqual(commande.client.telephone, '0341122334')
+        self.assertEqual(commande.quantite, 2)
+
+    def test_client_en_liste_attente_non_confirme_meme_avec_infos(self):
+        self.variante.stock = 1
+        self.variante.save()
+        a = self._capture('JP Robe Noire', sender_id='ttA', sender_name='Client TikTok')
+        b = self._capture('JP Robe Noire', sender_id='ttB', sender_name='Client TikTok')
+        cmd_a = Commande.objects.get(id=a['commande']['id'])
+        cmd_b = Commande.objects.get(id=b['commande']['id'])
+        self.assertEqual(cmd_a.ordre_jp, 1)
+        self.assertEqual(cmd_b.ordre_jp, 2)
+
+        # B (en attente) envoie pourtant ses infos complètes → reste en attente, sans stock.
+        resp_b = self._confirm(cmd_b.id, 'Bodo\n0331122334\nBypass\n12 mai\n14h\n1')
+        self.assertEqual(resp_b.status_code, 200)
+        self.assertTrue(resp_b.json().get('en_attente'))
+        cmd_b.refresh_from_db()
+        self.assertEqual(cmd_b.statut, Commande.STATUT_JP_CAPTURE)
+        self.variante.refresh_from_db()
+        self.assertEqual(self.variante.stock, 1)
+
+        # A (en tête) confirme normalement.
+        resp_a = self._confirm(cmd_a.id, 'Aina\n0320000000\nLot\n12 mai\n14h\n1')
+        self.assertTrue(resp_a.json()['complet'])
+        self.variante.refresh_from_db()
+        self.assertEqual(self.variante.stock, 0)
+        cmd_b.refresh_from_db()
+        self.assertEqual(cmd_b.statut, Commande.STATUT_JP_CAPTURE)
+
+    def test_promotion_auto_confirme_le_suivant_complet(self):
+        self.variante.stock = 1
+        self.variante.save()
+        a = self._capture('JP Robe Noire', sender_id='ttA', sender_name='Client TikTok')
+        b = self._capture('JP Robe Noire', sender_id='ttB', sender_name='Client TikTok')
+        cmd_a = Commande.objects.get(id=a['commande']['id'])
+        cmd_b = Commande.objects.get(id=b['commande']['id'])
+
+        self._confirm(cmd_b.id, 'Bodo\n0331122334\nBypass\n12 mai\n14h\n1')  # en attente, infos complètes
+        self._confirm(cmd_a.id, 'Aina\n0320000000\nLot\n12 mai\n14h\n1')      # confirmé, stock 0
+        self.variante.refresh_from_db()
+        self.assertEqual(self.variante.stock, 0)
+
+        # A annule → la place se libère → B (complet) est confirmé automatiquement.
+        self._confirm(cmd_a.id, 'Annuler')
+        cmd_b.refresh_from_db()
+        self.assertEqual(cmd_b.statut, Commande.STATUT_CONFIRME)
+        self.variante.refresh_from_db()
+        self.assertEqual(self.variante.stock, 0)
+        # Message dédié : commande prise en compte car une place s'est libérée.
+        last_b = cmd_b.messages.filter(direction=Message.DIRECTION_OUTBOUND).order_by('-date_envoi').first()
+        self.assertIn('toerana malalaka', last_b.contenu)
+        self.assertIn('voafahana', last_b.contenu)
+
+    def test_promotion_incomplet_demande_les_infos(self):
+        self.variante.stock = 1
+        self.variante.save()
+        a = self._capture('JP Robe Noire', sender_id='ttA', sender_name='Client TikTok')
+        b = self._capture('JP Robe Noire', sender_id='ttB', sender_name='Client TikTok')
+        cmd_a = Commande.objects.get(id=a['commande']['id'])
+        cmd_b = Commande.objects.get(id=b['commande']['id'])
+
+        # B (en attente) n'envoie qu'une partie de ses infos.
+        self._confirm(cmd_b.id, 'Bodo')
+        cmd_b.refresh_from_db()
+        self.assertEqual(cmd_b.statut, Commande.STATUT_JP_CAPTURE)
+
+        # A confirme puis annule → B est promu mais incomplet → on lui demande ses infos.
+        self._confirm(cmd_a.id, 'Aina\n0320000000\nLot\n12 mai\n14h\n1')
+        self._confirm(cmd_a.id, 'Annuler')
+
+        cmd_b.refresh_from_db()
+        self.assertEqual(cmd_b.statut, Commande.STATUT_JP_CAPTURE)  # toujours en attente d'infos
+        last_b = cmd_b.messages.filter(direction=Message.DIRECTION_OUTBOUND).order_by('-date_envoi').first()
+        self.assertIn('toerana malalaka', last_b.contenu)
+        self.assertIn('alefaso', last_b.contenu)  # on demande d'envoyer les infos
+
+    def test_expiration_par_delai_fait_monter_le_suivant(self):
+        from django.core.management import call_command
+
+        self.variante.stock = 1
+        self.variante.save()
+        a = self._capture('JP Robe Noire', sender_id='ttA', sender_name='Client TikTok')
+        b = self._capture('JP Robe Noire', sender_id='ttB', sender_name='Client TikTok')
+        cmd_a = Commande.objects.get(id=a['commande']['id'])
+        cmd_b = Commande.objects.get(id=b['commande']['id'])
+
+        # B (en attente) a déjà tout fourni.
+        self._confirm(cmd_b.id, 'Bodo\n0331122334\nBypass\n12 mai\n14h\n1')
+        cmd_b.refresh_from_db()
+        self.assertEqual(cmd_b.statut, Commande.STATUT_JP_CAPTURE)
+
+        # A (en tête) ne confirme jamais : 3 relances puis expiration (--force ignore le délai).
+        for _ in range(4):
+            call_command('run_relances', '--force')
+
+        cmd_a.refresh_from_db()
+        cmd_b.refresh_from_db()
+        self.assertEqual(cmd_a.statut, Commande.STATUT_ANNULE)        # A expiré
+        self.assertEqual(cmd_b.statut, Commande.STATUT_CONFIRME)      # B promu et confirmé
+        self.variante.refresh_from_db()
+        self.assertEqual(self.variante.stock, 0)
+
+    def test_client_en_attente_pas_de_relance(self):
+        from django.core.management import call_command
+
+        self.variante.stock = 1
+        self.variante.save()
+        self._capture('JP Robe Noire', sender_id='ttA', sender_name='Client TikTok')
+        b = self._capture('JP Robe Noire', sender_id='ttB', sender_name='Client TikTok')
+        cmd_b = Commande.objects.get(id=b['commande']['id'])
+        relances_avant = cmd_b.messages.count()
+
+        call_command('run_relances', '--force')
+
+        # B est en liste d'attente : il ne reçoit pas de relance.
+        self.assertEqual(cmd_b.messages.count(), relances_avant)
 

@@ -30,7 +30,7 @@ class ClientAdmin(admin.ModelAdmin):
 
 @admin.register(Commande)
 class CommandeAdmin(admin.ModelAdmin):
-    list_display = ('id', 'client', 'produit', 'ordre_jp', 'statut', 'date_creation')
+    list_display = ('id', 'client', 'produit', 'quantite', 'ordre_jp', 'statut', 'date_creation')
     list_filter = ('statut',)
     search_fields = ('client__nom', 'produit__nom')
 

@@ -193,6 +193,8 @@ class Commande(models.Model):
     client = models.ForeignKey(Client, on_delete=models.CASCADE, related_name='commandes')
     produit = models.ForeignKey(Produit, on_delete=models.CASCADE, related_name='commandes')
     ordre_jp = models.IntegerField(default=1)
+    # null = le client n'a pas encore indiqué la quantité (demandée pendant la collecte d'infos).
+    quantite = models.PositiveIntegerField(null=True, blank=True, default=None)
     statut = models.CharField(max_length=50, choices=STATUT_CHOICES, default=STATUT_JP_CAPTURE)
     date_creation = models.DateTimeField(auto_now_add=True)
     live = models.ForeignKey(Live, on_delete=models.SET_NULL, null=True, blank=True, related_name='commandes')
@@ -201,16 +203,16 @@ class Commande(models.Model):
     class Meta:
         ordering = ['date_creation']
 
-    def _promote_next_in_queue(self):
-        """Checks for the next waiting client for this product and sends a promotion notification."""
-        next_cmd = Commande.objects.filter(
-            produit=self.produit,
-            statut=self.STATUT_JP_CAPTURE
-        ).exclude(pk=self.pk).order_by('ordre_jp').first()
+    @property
+    def quantite_effective(self) -> int:
+        """Quantité utilisable pour les calculs (1 tant que le client n'a rien indiqué)."""
+        return self.quantite or 1
 
-        if next_cmd:
-            from .services import MessagingService
-            MessagingService.send_promotion_message(next_cmd.client, next_cmd.produit, next_cmd.id)
+    def _promote_next_in_queue(self):
+        """Une place s'est libérée : avance la file (confirme les suivants complets, sinon relance)."""
+        from .order_confirmation import promote_queue
+
+        promote_queue(self.produit, variante=self.variante, exclude_pk=self.pk)
 
     def save(self, *args, **kwargs):
         is_new = self.pk is None
@@ -225,11 +227,11 @@ class Commande(models.Model):
 
         # Decrement stock if transitioning to Confirmed
         if (is_new and self.statut == self.STATUT_CONFIRME) or (old_status != self.STATUT_CONFIRME and self.statut == self.STATUT_CONFIRME):
-            self._adjust_variante_stock(-1)
+            self._adjust_variante_stock(-self.quantite_effective)
 
         # Increment stock if transitioning from Confirmed to Cancelled
         elif old_status == self.STATUT_CONFIRME and self.statut == self.STATUT_ANNULE:
-            self._adjust_variante_stock(1)
+            self._adjust_variante_stock(self.quantite_effective)
 
         # Queue Promotion Logic!
         if not is_new and old_status != self.STATUT_ANNULE and self.statut == self.STATUT_ANNULE:
@@ -252,11 +254,17 @@ class Commande(models.Model):
         first = self.produit.variantes.order_by('id').first()
         return first.prix_unitaire if first else 0
 
+    def get_prix_total(self):
+        return self.get_prix_unitaire() * self.quantite_effective
+
     def delete(self, *args, **kwargs):
         if self.statut == self.STATUT_CONFIRME:
-            self._adjust_variante_stock(1)
-        self._promote_next_in_queue()
+            self._adjust_variante_stock(self.quantite_effective)
+        produit, variante, pk = self.produit, self.variante, self.pk
         super().delete(*args, **kwargs)
+        from .order_confirmation import promote_queue
+
+        promote_queue(produit, variante=variante, exclude_pk=pk)
 
     def __str__(self):
         return f"Commande #{self.pk} - {self.client.nom} - {self.produit.nom}"
