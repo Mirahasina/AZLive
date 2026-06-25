@@ -18,15 +18,30 @@ def validate_variante_uniqueness(produit, taille, couleur, exclude_pk=None):
         )
 
 
-def validate_code_jp_uniqueness(code_jp, exclude_pk=None):
-    """Un code_jp est unique dans le système."""
+def validate_code_jp_uniqueness(code_jp, produit=None, exclude_pk=None):
+    """Valide le code JP « par défaut » d'une variante (code catalogue, en repli).
+
+    Le code n'est plus unique globalement : l'unicité réelle est portée par live via
+    le modèle LiveCodeJP (unique par live). Ici on se contente de :
+      - normaliser (retrait d'un éventuel préfixe « JP », trim, majuscules) ;
+      - autoriser un code vide/nul (les codes peuvent être attribués par live) ;
+      - éviter qu'un même produit ait deux variantes avec le même code de repli
+        (sinon la résolution hors live serait ambiguë).
+    """
+    from .jp_codes import normalize_jp_code
     from .models import Variante
 
-    if not code_jp or not str(code_jp).strip():
-        raise ValidationError('Le code JP est obligatoire pour chaque variante.')
+    normalized = normalize_jp_code(code_jp)
+    if not normalized:
+        return
 
-    qs = Variante.objects.filter(code_jp__iexact=str(code_jp).strip())
+    if produit is None:
+        return
+
+    qs = Variante.objects.filter(produit=produit, code_jp__iexact=normalized)
     if exclude_pk is not None:
         qs = qs.exclude(pk=exclude_pk)
     if qs.exists():
-        raise ValidationError(f'Le code JP "{code_jp}" est déjà utilisé par une autre variante.')
+        raise ValidationError(
+            f'Le code JP "{normalized}" est déjà utilisé par une autre variante de ce produit.'
+        )

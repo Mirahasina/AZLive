@@ -250,7 +250,9 @@ class BackendGapsAPITest(TestCase):
         response = self.client.get(f'/api/commandes/{commande.id}/etiquette-jp/')
         self.assertEqual(response.status_code, 200)
         data = response.json()
-        self.assertIn('JPNOIR ROBE NOIRE', data['label_text'])
+        # Le code est stocke nu ('NOIR') et affiche avec un seul prefixe 'JP' (pas 'JP JP').
+        self.assertIn('JP NOIR ROBE NOIRE', data['label_text'])
+        self.assertNotIn('JP JP', data['label_text'])
         self.assertIn('60,000 Ar', data['label_text'])
 
     def test_azexpress_shipping_dispatch(self):
@@ -355,7 +357,8 @@ class BackendGapsAPITest(TestCase):
         data = response.json()
         self.assertEqual(len(data['variantes']), 2)
         self.assertEqual(data['variantes'][0]['taille'], self.variante.taille)
-        self.assertEqual(data['variantes'][1]['code_jp'], 'JPNOIR2')
+        # Le code est normalise (nu, sans prefixe 'JP') a l'enregistrement.
+        self.assertEqual(data['variantes'][1]['code_jp'], 'NOIR2')
 
     def test_client_stats_and_fidelity_endpoints(self):
         client = Client.objects.create(nom='Faratiana Rabe', telephone='0342255588', social_handle='@fara_rabe')
@@ -1272,4 +1275,207 @@ class QuantiteEtAnnulationTest(TestCase):
 
         # B est en liste d'attente : il ne reçoit pas de relance.
         self.assertEqual(cmd_b.messages.count(), relances_avant)
+
+    def test_file_attente_3_personnes_selon_stock_et_quantites(self):
+        # Stock 5 : P1 prend 4, P2 prend le reste (1), P3 attend la file.
+        self.variante.stock = 5
+        self.variante.save()
+        a = self._capture('JP Robe Noire', sender_id='p1', sender_name='Client TikTok')
+        b = self._capture('JP Robe Noire', sender_id='p2', sender_name='Client TikTok')
+        c = self._capture('JP Robe Noire', sender_id='p3', sender_name='Client TikTok')
+        cmd_a = Commande.objects.get(id=a['commande']['id'])
+        cmd_b = Commande.objects.get(id=b['commande']['id'])
+        cmd_c = Commande.objects.get(id=c['commande']['id'])
+
+        # P1 confirme 4 -> reste 1.
+        r1 = self._confirm(cmd_a.id, 'Aina\n0320000001\nLot\n12 mai\n14h\n4')
+        self.assertTrue(r1.json()['complet'])
+        self.variante.refresh_from_db()
+        self.assertEqual(self.variante.stock, 1)
+
+        # P2 confirme 1 (le reste) -> reste 0.
+        r2 = self._confirm(cmd_b.id, 'Bodo\n0320000002\nBypass\n12 mai\n14h\n1')
+        self.assertTrue(r2.json()['complet'])
+        self.variante.refresh_from_db()
+        self.assertEqual(self.variante.stock, 0)
+
+        # P3 fournit tout mais le stock est épuisé -> liste d'attente.
+        r3 = self._confirm(cmd_c.id, 'Cara\n0320000003\nIvato\n12 mai\n14h\n1')
+        self.assertTrue(r3.json().get('en_attente'))
+        cmd_c.refresh_from_db()
+        self.assertEqual(cmd_c.statut, Commande.STATUT_JP_CAPTURE)
+
+        # P2 annule -> une place se libère -> P3 (complet) confirmé automatiquement.
+        self._confirm(cmd_b.id, 'Annuler')
+        cmd_c.refresh_from_db()
+        self.assertEqual(cmd_c.statut, Commande.STATUT_CONFIRME)
+        self.variante.refresh_from_db()
+        self.assertEqual(self.variante.stock, 0)
+
+    def test_jp_keyword_insensible_a_la_casse(self):
+        # "jp", "JP", "Jp" déclenchent tous la capture.
+        for txt, sid in (('jp Robe Noire', 'lc1'), ('Jp Robe Noire', 'lc2'), ('jP Robe Noire', 'lc3')):
+            res = self._capture(txt, sender_id=sid, sender_name='Client TikTok')
+            self.assertEqual(res['status'], 'JP capturé avec succès')
+
+
+class JPCodeNormalizationTest(TestCase):
+    def test_normalize_strips_jp_prefix(self):
+        from .jp_codes import format_jp_code, normalize_jp_code
+
+        self.assertEqual(normalize_jp_code('JP NOIR'), 'NOIR')
+        self.assertEqual(normalize_jp_code('JPNOIR'), 'NOIR')
+        self.assertEqual(normalize_jp_code(' jp-001 '), '001')
+        self.assertEqual(normalize_jp_code('NOIR'), 'NOIR')
+        self.assertEqual(normalize_jp_code(None), '')
+
+    def test_format_never_doubles_jp(self):
+        from .jp_codes import format_jp_code
+
+        self.assertEqual(format_jp_code('JPNOIR'), 'JP NOIR')
+        self.assertEqual(format_jp_code('NOIR'), 'JP NOIR')
+        self.assertNotIn('JP JP', format_jp_code('JP JPNOIR'))
+
+    def test_variante_save_stores_bare_code(self):
+        vendeur = Vendeur.objects.create(nom='Vendeur', contact='0341234567')
+        produit = create_test_produit(vendeur, nom='Robe', variante={
+            'taille': 'M', 'couleur': 'Noir', 'prix_unitaire': '1000.00', 'stock': 5, 'code_jp': 'JPNOIR',
+        })
+        variante = produit.variantes.first()
+        self.assertEqual(variante.code_jp, 'NOIR')
+
+
+class LiveCodeResolutionTest(TestCase):
+    def setUp(self):
+        from .models import Live
+
+        self.vendeur = Vendeur.objects.create(nom='Vendeur', contact='0341234567')
+        self.produit_a = create_test_produit(self.vendeur, nom='Robe Rouge', variante={
+            'taille': 'M', 'couleur': 'Rouge', 'prix_unitaire': '45000.00', 'stock': 10, 'code_jp': 'A',
+        })
+        self.produit_b = create_test_produit(self.vendeur, nom='Robe Bleue', variante={
+            'taille': 'M', 'couleur': 'Bleu', 'prix_unitaire': '50000.00', 'stock': 10, 'code_jp': 'B',
+        })
+        self.var_a = self.produit_a.variantes.first()
+        self.var_b = self.produit_b.variantes.first()
+        self.live1 = Live.objects.create(titre='Live 1', vendeur=self.vendeur, statut=Live.STATUT_EN_COURS)
+        self.live2 = Live.objects.create(titre='Live 2', vendeur=self.vendeur, statut=Live.STATUT_EN_COURS)
+
+    def _capture(self, comment_text, live, sender_id):
+        from .jp_capture import process_social_comment
+
+        return process_social_comment(
+            sender_id=sender_id,
+            sender_name='Acheteur',
+            comment_text=comment_text,
+            channel='TikTok',
+            vendeur=self.vendeur,
+            live=live,
+            id_field='tiktok_id',
+        )
+
+    def test_same_code_reusable_across_lives_without_collision(self):
+        from .models import LiveCodeJP
+
+        # Le code "1" pointe vers des produits differents selon le live.
+        LiveCodeJP.objects.create(live=self.live1, variante=self.var_a, code='1')
+        LiveCodeJP.objects.create(live=self.live2, variante=self.var_b, code='1')
+
+        self.assertEqual(LiveCodeJP.objects.filter(code='1').count(), 2)
+
+    def test_resolution_uses_live_specific_mapping(self):
+        from .models import Commande, LiveCodeJP
+
+        LiveCodeJP.objects.create(live=self.live1, variante=self.var_a, code='1')
+        LiveCodeJP.objects.create(live=self.live2, variante=self.var_b, code='1')
+
+        res1 = self._capture('JP 1', self.live1, sender_id='ttLive1')
+        cmd1 = Commande.objects.get(id=res1['commande']['id'])
+        self.assertEqual(cmd1.variante_id, self.var_a.id)
+        self.assertEqual(cmd1.produit_id, self.produit_a.id)
+
+        res2 = self._capture('JP 1', self.live2, sender_id='ttLive2')
+        cmd2 = Commande.objects.get(id=res2['commande']['id'])
+        self.assertEqual(cmd2.variante_id, self.var_b.id)
+        self.assertEqual(cmd2.produit_id, self.produit_b.id)
+
+    def test_double_jp_legacy_still_resolves(self):
+        from .models import Commande, LiveCodeJP
+
+        LiveCodeJP.objects.create(live=self.live1, variante=self.var_a, code='NOIR')
+        # Ancien comportement : un client tape par erreur "JP JPNOIR" -> doit resoudre vers NOIR.
+        res = self._capture('JP JPNOIR', self.live1, sender_id='ttLegacy')
+        cmd = Commande.objects.get(id=res['commande']['id'])
+        self.assertEqual(cmd.variante_id, self.var_a.id)
+
+    def test_code_resolution_case_insensitive(self):
+        from .models import Commande, LiveCodeJP
+
+        LiveCodeJP.objects.create(live=self.live1, variante=self.var_a, code='A')
+        for txt, sid in (('jp a', 'ci1'), ('JP A', 'ci2'), ('Jp a', 'ci3')):
+            res = self._capture(txt, self.live1, sender_id=sid)
+            cmd = Commande.objects.get(id=res['commande']['id'])
+            self.assertEqual(cmd.variante_id, self.var_a.id)
+
+
+class LiveCodesEndpointTest(TestCase):
+    def setUp(self):
+        from .models import Live
+
+        self.vendeur = Vendeur.objects.create(nom='Vendeur', contact='0341234567')
+        self.produit_a = create_test_produit(self.vendeur, nom='Robe Rouge', variante={
+            'taille': 'M', 'couleur': 'Rouge', 'prix_unitaire': '45000.00', 'stock': 10, 'code_jp': 'A',
+        })
+        self.produit_b = create_test_produit(self.vendeur, nom='Robe Bleue', variante={
+            'taille': 'M', 'couleur': 'Bleu', 'prix_unitaire': '50000.00', 'stock': 10, 'code_jp': 'B',
+        })
+        self.var_a = self.produit_a.variantes.first()
+        self.var_b = self.produit_b.variantes.first()
+        self.live = Live.objects.create(titre='Live', vendeur=self.vendeur)
+
+    def _post_codes(self, live_id, codes):
+        return self.client.post(
+            f'/api/lives/{live_id}/codes/',
+            {'codes': codes},
+            content_type='application/json',
+        )
+
+    def test_upsert_codes(self):
+        resp = self._post_codes(self.live.id, [
+            {'variante_id': self.var_a.id, 'code': 'JP 1'},
+            {'variante_id': self.var_b.id, 'code': '2'},
+        ])
+        self.assertEqual(resp.status_code, 200)
+        from .models import LiveCodeJP
+
+        self.assertEqual(LiveCodeJP.objects.get(live=self.live, variante=self.var_a).code, '1')
+        self.assertEqual(LiveCodeJP.objects.get(live=self.live, variante=self.var_b).code, '2')
+
+    def test_duplicate_code_in_same_live_rejected(self):
+        self._post_codes(self.live.id, [{'variante_id': self.var_a.id, 'code': '1'}])
+        resp = self._post_codes(self.live.id, [{'variante_id': self.var_b.id, 'code': '1'}])
+        self.assertEqual(resp.status_code, 409)
+
+    def test_duplicate_code_case_insensitive_rejected(self):
+        # 'ABC' et 'abc' sont le meme code (normalises en majuscules).
+        self._post_codes(self.live.id, [{'variante_id': self.var_a.id, 'code': 'ABC'}])
+        resp = self._post_codes(self.live.id, [{'variante_id': self.var_b.id, 'code': 'abc'}])
+        self.assertEqual(resp.status_code, 409)
+
+    def test_same_code_other_live_ok(self):
+        from .models import Live
+
+        other = Live.objects.create(titre='Autre', vendeur=self.vendeur)
+        r1 = self._post_codes(self.live.id, [{'variante_id': self.var_a.id, 'code': '1'}])
+        r2 = self._post_codes(other.id, [{'variante_id': self.var_b.id, 'code': '1'}])
+        self.assertEqual(r1.status_code, 200)
+        self.assertEqual(r2.status_code, 200)
+
+    def test_empty_code_removes_mapping(self):
+        from .models import LiveCodeJP
+
+        self._post_codes(self.live.id, [{'variante_id': self.var_a.id, 'code': '1'}])
+        self.assertTrue(LiveCodeJP.objects.filter(live=self.live, variante=self.var_a).exists())
+        self._post_codes(self.live.id, [{'variante_id': self.var_a.id, 'code': ''}])
+        self.assertFalse(LiveCodeJP.objects.filter(live=self.live, variante=self.var_a).exists())
 

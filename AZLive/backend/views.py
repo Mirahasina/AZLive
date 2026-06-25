@@ -13,7 +13,7 @@ from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from rest_framework.permissions import IsAuthenticated, AllowAny
 
 from .ai import JPCommentAnalyzer
-from .models import Client, Commande, Livraison, Livreur, Paiement, Produit, ProduitImage, Vendeur, Message, Collaborateur, Live, Variante, PageFacebook, ParametresPlateforme
+from .models import Client, Commande, Livraison, Livreur, Paiement, Produit, ProduitImage, Vendeur, Message, Collaborateur, Live, LiveCodeJP, Variante, PageFacebook, ParametresPlateforme
 from .serializers import (
     ClientSerializer,
     CommandeSerializer,
@@ -26,11 +26,13 @@ from .serializers import (
     MessageSerializer,
     CollaborateurSerializer,
     LiveSerializer,
+    LiveCodeJPSerializer,
     VarianteSerializer,
     PageFacebookSerializer,
 )
 from .services import MessagingService, AZExpressService
 from .facebook_oauth import FacebookOAuthError, facebook_configured, sync_vendeur_pages
+from .jp_codes import code_for_commande, format_jp_code, normalize_jp_code
 from .jp_capture import create_jp_commande
 from .live_service import arreter_live, demarrer_live
 from .documents import build_etiquette_livraison_pdf, build_facture_pdf, pdf_response
@@ -61,7 +63,7 @@ def _commande_variante_payload(commande):
         'taille': variante.taille,
         'couleur': variante.couleur,
         'prix': str(variante.prix_unitaire),
-        'code_jp': variante.code_jp,
+        'code_jp': code_for_commande(commande),
     }
 
 
@@ -218,9 +220,11 @@ class JPCaptureAPIView(APIView):
         if not query:
             return None
 
-        variante = Variante.objects.filter(code_jp__iexact=query.strip()).select_related('produit').first()
-        if variante:
-            return variante.produit, variante
+        code = normalize_jp_code(query)
+        if code:
+            variante = Variante.objects.filter(code_jp__iexact=code).select_related('produit').first()
+            if variante:
+                return variante.produit, variante
 
         variante_qs = Variante.objects.select_related('produit').filter(
             models.Q(code_jp__icontains=query)
@@ -447,8 +451,10 @@ class CommandeEtiquetteJPAPIView(APIView):
         if not variante:
             return Response({'detail': 'Aucune variante associée à cette commande.'}, status=status.HTTP_404_NOT_FOUND)
 
+        bare_code = code_for_commande(commande)
+        code_display = format_jp_code(bare_code)
         label_text = (
-            f"{variante.code_jp} {commande.produit.nom.upper()} - {int(variante.prix_unitaire):,} Ar\n"
+            f"{code_display} {commande.produit.nom.upper()} - {int(variante.prix_unitaire):,} Ar\n"
             f"({variante.couleur.upper()}, {variante.taille.upper()})"
         )
 
@@ -458,13 +464,13 @@ class CommandeEtiquetteJPAPIView(APIView):
             'prix': str(variante.prix_unitaire),
             'couleur': variante.couleur,
             'taille': variante.taille,
-            'code_jp': variante.code_jp,
+            'code_jp': bare_code,
             'ordre_jp': commande.ordre_jp,
             'label_text': label_text,
             'html_print': (
                 f"<div style='width: 58mm; font-family: monospace; text-align: center; border: 1px dashed black; padding: 10px; margin: 10px;'>"
                 f"<h2>AZLIVE LABEL</h2>"
-                f"<div style='font-size: 16px; font-weight: bold; margin: 10px 0;'>{variante.code_jp} {commande.produit.nom.upper()}</div>"
+                f"<div style='font-size: 16px; font-weight: bold; margin: 10px 0;'>{code_display} {commande.produit.nom.upper()}</div>"
                 f"<div style='font-size: 20px; font-weight: bold; margin: 5px 0;'>{int(variante.prix_unitaire):,} Ar</div>"
                 f"<div style='font-size: 12px; margin: 5px 0;'>Taille: {variante.taille.upper()} | Couleur: {variante.couleur.upper()}</div>"
                 f"<div style='font-size: 10px; color: gray; margin-top: 15px;'>Commande #{commande.id} | Ordre JP: #{commande.ordre_jp}</div>"
@@ -686,7 +692,8 @@ class DashboardStatsAPIView(APIView):
             if prod:
                 prix = float(variante.prix_unitaire) if variante else float(prod.variantes.order_by('id').first().prix_unitaire) if prod.variantes.exists() else 0
                 stock = variante.stock if variante else prod.stock_total
-                code_jp = variante.code_jp if variante else (prod.variantes.order_by('id').first().code_jp if prod.variantes.exists() else f'JP{prod.id}')
+                raw_code = variante.code_jp if variante else (prod.variantes.order_by('id').first().code_jp if prod.variantes.exists() else '')
+                code_jp = normalize_jp_code(raw_code) or f'P{prod.id}'
                 best_sellers_ranking.append({
                     'rang': index,
                     'produit_nom': prod.nom,
@@ -733,6 +740,79 @@ class LiveDetailView(generics.RetrieveUpdateDestroyAPIView):
             elif live.statut == Live.STATUT_TERMINE:
                 live = arreter_live(live)
             serializer.instance = live
+
+
+class LiveCodesAPIView(APIView):
+    """Gestion des codes JP propres a un live.
+
+    GET  : liste des correspondances code -> variante du live.
+    POST : upsert d'une liste {variante_id, code}. Les codes sont uniques DANS le
+           live mais reutilisables d'un live a l'autre (sans ecraser les autres lives).
+           Un code vide supprime la correspondance de la variante pour ce live.
+    """
+    permission_classes = [AllowAny]
+
+    def get(self, request, pk):
+        live = get_object_or_404(Live, pk=pk)
+        codes = live.codes_jp.select_related('variante').all()
+        return Response(LiveCodeJPSerializer(codes, many=True).data, status=status.HTTP_200_OK)
+
+    def post(self, request, pk):
+        live = get_object_or_404(Live, pk=pk)
+        payload = request.data.get('codes', request.data)
+        if not isinstance(payload, list):
+            return Response(
+                {'detail': "Le corps doit contenir une liste 'codes' de {variante_id, code}."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Normalisation + detection des doublons de code dans le lot soumis.
+        entries = []
+        seen_codes = {}
+        for item in payload:
+            variante_id = item.get('variante_id') or item.get('variante')
+            if not variante_id:
+                return Response({'detail': 'variante_id manquant.'}, status=status.HTTP_400_BAD_REQUEST)
+            code = normalize_jp_code(item.get('code'))
+            entries.append((int(variante_id), code))
+            if code:
+                if code in seen_codes and seen_codes[code] != int(variante_id):
+                    return Response(
+                        {'detail': f'Le code "{code}" est utilise deux fois dans la requete.'},
+                        status=status.HTTP_409_CONFLICT,
+                    )
+                seen_codes[code] = int(variante_id)
+
+        try:
+            with transaction.atomic():
+                for variante_id, code in entries:
+                    variante = Variante.objects.filter(pk=variante_id).first()
+                    if not variante:
+                        raise OrderConfirmationError(
+                            f'Variante #{variante_id} introuvable.', status_code=404
+                        )
+                    if not code:
+                        LiveCodeJP.objects.filter(live=live, variante=variante).delete()
+                        continue
+                    # Conflit : meme code deja pris dans CE live par une AUTRE variante.
+                    conflict = (
+                        LiveCodeJP.objects.filter(live=live, code__iexact=code)
+                        .exclude(variante=variante)
+                        .exists()
+                    )
+                    if conflict:
+                        raise OrderConfirmationError(
+                            f'Le code "{code}" est deja utilise dans ce live.',
+                            status_code=409,
+                        )
+                    LiveCodeJP.objects.update_or_create(
+                        live=live, variante=variante, defaults={'code': code}
+                    )
+        except OrderConfirmationError as exc:
+            return Response({'detail': exc.message}, status=exc.status_code)
+
+        codes = live.codes_jp.select_related('variante').all()
+        return Response(LiveCodeJPSerializer(codes, many=True).data, status=status.HTTP_200_OK)
 
 
 class CollaborateurListCreateView(generics.ListCreateAPIView):
