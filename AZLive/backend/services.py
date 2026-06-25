@@ -78,7 +78,7 @@ class AZExpressService:
             f"{commande.produit.nom} ({variante.couleur}, {variante.taille})"
             if variante else commande.produit.nom
         )
-        montant = float(variante.prix_unitaire) if variante else 0
+        montant = float(variante.prix_unitaire) * commande.quantite_effective if variante else 0
 
         payload = {
             "commande_id": commande.id,
@@ -87,6 +87,7 @@ class AZExpressService:
             "client_telephone": commande.client.telephone,
             "client_adresse": commande.client.adresse,
             "produit": variante_label,
+            "quantite": commande.quantite_effective,
             "montant_a_percevoir": montant,
             "tracking_number": tracking_number
         }

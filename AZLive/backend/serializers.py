@@ -280,7 +280,7 @@ class ProduitSerializer(serializers.ModelSerializer):
 
 
 def _commande_prix(commande):
-    return float(commande.get_prix_unitaire())
+    return float(commande.get_prix_total())
 
 
 class LiveSerializer(serializers.ModelSerializer):
@@ -400,6 +400,8 @@ class CommandeSerializer(serializers.ModelSerializer):
     live_id = serializers.PrimaryKeyRelatedField(queryset=Live.objects.all(), source='live', write_only=True, allow_null=True, required=False)
     variante = VarianteSerializer(read_only=True)
     variante_id = serializers.PrimaryKeyRelatedField(queryset=Variante.objects.all(), source='variante', write_only=True, allow_null=True, required=False)
+    prix_unitaire = serializers.SerializerMethodField()
+    prix_total = serializers.SerializerMethodField()
 
     class Meta:
         model = Commande
@@ -410,6 +412,7 @@ class CommandeSerializer(serializers.ModelSerializer):
             'produit',
             'produit_id',
             'ordre_jp',
+            'quantite',
             'statut',
             'date_creation',
             'paiement',
@@ -418,7 +421,15 @@ class CommandeSerializer(serializers.ModelSerializer):
             'live_id',
             'variante',
             'variante_id',
+            'prix_unitaire',
+            'prix_total',
         ]
+
+    def get_prix_unitaire(self, obj):
+        return float(obj.get_prix_unitaire())
+
+    def get_prix_total(self, obj):
+        return float(obj.get_prix_total())
 
 
 class MessageSerializer(serializers.ModelSerializer):

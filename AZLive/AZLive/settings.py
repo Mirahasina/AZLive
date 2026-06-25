@@ -34,7 +34,11 @@ def _load_dotenv(path: Path) -> None:
             os.environ[key] = value
 
 
-_load_dotenv(BASE_DIR / '.env')
+# En test, on ne charge pas le .env local : les tests doivent être hermétiques et
+# indépendants des secrets du développeur (Facebook/TikTok, app secret, etc.).
+# Les tests qui ont besoin d'une configuration l'injectent via override_settings.
+if 'test' not in sys.argv:
+    _load_dotenv(BASE_DIR / '.env')
 
 
 # Quick-start development settings - unsuitable for production
@@ -207,6 +211,12 @@ FACEBOOK_WEBHOOK_FIELDS = os.environ.get(
 
 # URL publique de l'API (liens facture / étiquette dans les messages privés)
 AZLIVE_PUBLIC_BASE_URL = os.environ.get('AZLIVE_PUBLIC_BASE_URL', 'http://localhost:8000')
+
+# File d'attente JP : relances + expiration automatique du client en tête.
+# Délai (minutes) sans nouvelle d'un client ÉLIGIBLE (en tête de file) avant une relance.
+AZLIVE_JP_RELANCE_DELAY_MINUTES = int(os.environ.get('AZLIVE_JP_RELANCE_DELAY_MINUTES', '30'))
+# Nombre maximum de relances avant expiration.
+AZLIVE_JP_MAX_RELANCES = int(os.environ.get('AZLIVE_JP_MAX_RELANCES', '3'))
 
 # MediaMTX — pont WebRTC (navigateur) -> RTMPS (Facebook Live).
 # Si MEDIAMTX_ENABLED est faux, le démarrage de live garde l'ancien comportement

@@ -177,6 +177,10 @@ def parse_confirmation_text(text: str) -> dict[str, str]:
 
     classified = {'phones': [], 'dates': [], 'times': [], 'others': []}
     for line in lines:
+        # Une ligne « quantité » (ex. « 2 », « 2 pcs ») est gérée à part (champ commande),
+        # surtout pas comme un nom ou une adresse.
+        if _is_quantity_line(line):
+            continue
         inline_date, inline_time = _extract_inline_date_time(line)
         if inline_date:
             classified['dates'].append(inline_date)
@@ -281,6 +285,27 @@ def find_pending_commande(client: Client, vendeur: Vendeur | None = None) -> Com
     return queryset.first()
 
 
+# Statuts à partir desquels un client peut encore annuler sa commande.
+# (On exclut volontairement EN_LIVRAISON, LIVRE et ANNULE : trop tard ou déjà fait.)
+CANCELLABLE_STATUSES = (
+    Commande.STATUT_JP_CAPTURE,
+    Commande.STATUT_CONFIRME,
+    Commande.STATUT_PREPARE,
+)
+
+
+def find_cancellable_commande(client: Client, vendeur: Vendeur | None = None) -> Commande | None:
+    """Dernière commande encore annulable du client (JP en attente, confirmée ou préparée)."""
+    queryset = (
+        Commande.objects.select_related('produit', 'produit__vendeur', 'client', 'variante', 'live')
+        .filter(client=client, statut__in=CANCELLABLE_STATUSES)
+        .order_by('-date_creation')
+    )
+    if vendeur:
+        queryset = queryset.filter(produit__vendeur=vendeur)
+    return queryset.first()
+
+
 def resolve_page_for_commande(commande: Commande) -> PageFacebook | None:
     vendeur = commande.produit.vendeur
     if commande.live_id and commande.live.pages_facebook:
@@ -301,12 +326,20 @@ def resolve_page_for_commande(commande: Commande) -> PageFacebook | None:
 
 
 CANCELLATION_PATTERNS = [
+    # Français
     re.compile(r'\bannul', re.IGNORECASE),
+    re.compile(r'\bje\s+(?:ne\s+)?(?:veux|prends?|prend)\s+plus\b', re.IGNORECASE),
     re.compile(r'\bne\s+(?:veux|prends?|prend)\s+plus\b', re.IGNORECASE),
     re.compile(r'\bplus\s+besoin\b', re.IGNORECASE),
     re.compile(r'\bnon\s+merci\b', re.IGNORECASE),
-    re.compile(r'\btsy\s+(?:maka|haka|mila|te)\b', re.IGNORECASE),
-    re.compile(r'^\s*tsia\s*$', re.IGNORECASE),
+    # Malagasy
+    # tsy + verbe vouloir/prendre/acheter/avoir besoin (te, tia, mila, ila, maka, haka, mividy, hividy...)
+    re.compile(r'\btsy\s+(?:te|tia|mila|ila|ilaiko|maka|haka|mividy|hividy|haiko)\b', re.IGNORECASE),
+    re.compile(r'\bfoan[ao]\b', re.IGNORECASE),       # foana / foano = annuler
+    re.compile(r'\besory\b', re.IGNORECASE),          # esory = enlève / retire
+    re.compile(r'\bajanon[ay]\b', re.IGNORECASE),     # ajanony = arrête
+    re.compile(r'\bavelao\b', re.IGNORECASE),         # avelao = laisse tomber
+    re.compile(r'^\s*tsia\s*$', re.IGNORECASE),       # tsia = non (seul)
 ]
 
 
@@ -316,6 +349,93 @@ def _is_cancellation(text: str) -> bool:
     if not cleaned:
         return False
     return any(pattern.search(cleaned) for pattern in CANCELLATION_PATTERNS)
+
+
+QUANTITY_LABELLED_PATTERN = re.compile(
+    r'(?:quantit[eé]|qte|qty|nombre|isan?[\'’y]?)\s*[:=\-]?\s*(\d{1,3})',
+    re.IGNORECASE,
+)
+QUANTITY_SUFFIX_PATTERN = re.compile(
+    r'(\d{1,3})\s*(?:pcs?|pi[eè]ces?|unit[eé]s?|isa)\b',
+    re.IGNORECASE,
+)
+QUANTITY_X_PATTERN = re.compile(r'(?:^|\s)x\s*(\d{1,3})\b|\b(\d{1,3})\s*x(?:\s|$)', re.IGNORECASE)
+QUANTITY_STANDALONE_PATTERN = re.compile(r'^\s*(\d{1,3})\s*$')
+
+
+def _parse_quantity(text: str, *, expecting: bool = False) -> int | None:
+    """Extrait une quantité d'un message libre.
+
+    Motifs explicites toujours acceptés : « quantité: 2 », « isa 2 », « 2 pcs », « x2 ».
+    Un nombre seul (« 2 ») n'est interprété comme quantité que lorsqu'on l'attend
+    (expecting=True), pour ne pas confondre avec un téléphone, une date ou une heure.
+    """
+    if not text:
+        return None
+
+    for pattern in (QUANTITY_LABELLED_PATTERN, QUANTITY_SUFFIX_PATTERN):
+        match = pattern.search(text)
+        if match and int(match.group(1)) > 0:
+            return int(match.group(1))
+
+    match = QUANTITY_X_PATTERN.search(text)
+    if match:
+        value = int(match.group(1) or match.group(2))
+        if value > 0:
+            return value
+
+    if expecting:
+        for line in (l.strip() for l in text.splitlines() if l.strip()):
+            if _looks_like_phone(line) or _looks_like_time(line) or _looks_like_date(line):
+                continue
+            standalone = QUANTITY_STANDALONE_PATTERN.match(line)
+            if standalone:
+                value = int(standalone.group(1))
+                if 0 < value <= 999:
+                    return value
+    return None
+
+
+def _is_quantity_line(line: str) -> bool:
+    """Vrai si la ligne ne porte qu'une quantité (« 2 », « 2 pcs », « quantité : 2 »).
+
+    Sert à éviter qu'un nombre seul soit pris à tort pour un nom ou une adresse.
+    """
+    cleaned = (line or '').strip()
+    if not cleaned:
+        return False
+    if _looks_like_phone(cleaned) or _looks_like_time(cleaned) or _looks_like_date(cleaned):
+        return False
+    return bool(
+        QUANTITY_STANDALONE_PATTERN.match(cleaned)
+        or QUANTITY_LABELLED_PATTERN.search(cleaned)
+        or QUANTITY_SUFFIX_PATTERN.search(cleaned)
+    )
+
+
+def _order_is_eligible(commande: Commande) -> bool:
+    """Vrai si la commande peut être confirmée maintenant (assez de stock, à son tour).
+
+    Le stock courant de la variante reflète déjà les commandes confirmées (décrémentées).
+    On ne compte donc que les JP encore en attente PLACÉS DEVANT (ordre_jp plus petit) :
+    s'ils consomment déjà tout le stock, ce client reste en liste d'attente.
+    """
+    variante = commande._get_stock_variante()
+    if not variante:
+        return True
+
+    remaining = variante.stock
+    ahead = (
+        Commande.objects.filter(
+            produit=commande.produit,
+            variante=commande.variante,
+            statut=Commande.STATUT_JP_CAPTURE,
+            ordre_jp__lt=commande.ordre_jp,
+        )
+        .exclude(pk=commande.pk)
+    )
+    qty_ahead = sum(c.quantite_effective for c in ahead)
+    return qty_ahead + commande.quantite_effective <= remaining
 
 
 def _ensure_paiement(commande: Commande) -> Paiement:
@@ -330,7 +450,8 @@ def _ensure_paiement(commande: Commande) -> Paiement:
     return paiement
 
 
-def _missing_confirmation_fields(client: Client) -> list[str]:
+def _missing_confirmation_fields(commande: Commande) -> list[str]:
+    client = commande.client
     missing = []
     if not client.nom or client.nom in {'Client Live', 'Client Facebook', 'Client TikTok'}:
         missing.append('nom')
@@ -342,6 +463,8 @@ def _missing_confirmation_fields(client: Client) -> list[str]:
         missing.append('date_livraison')
     if not client.heure_livraison_preferee:
         missing.append('heure_livraison')
+    if commande.quantite is None:
+        missing.append('quantite')
     return missing
 
 
@@ -387,12 +510,6 @@ def handle_client_reply(
     canal: str | None = None,
 ) -> dict[str, Any]:
     """Enregistre ce que le client a envoyé ; confirme si complet, sinon demande le reste."""
-    if commande.statut != Commande.STATUT_JP_CAPTURE:
-        raise OrderConfirmationError(
-            f'La commande #{commande.id} est déjà au statut {commande.get_statut_display()}.',
-            status_code=409,
-        )
-
     client = commande.client
     canal_message = canal or detect_client_channel(client)
 
@@ -405,9 +522,17 @@ def handle_client_reply(
             canal=canal_message,
         )
 
-    # Réponse négative explicite : on annule la commande (le stock éventuellement
-    # décrémenté est restauré et le suivant de la file est promu via Commande.save()).
+    # Réponse négative explicite : on annule la commande — y compris après confirmation
+    # ou préparation. Le stock éventuellement décrémenté est restauré et le suivant de la
+    # file est promu via Commande.save().
     if _is_cancellation(inbound_text):
+        if commande.statut not in CANCELLABLE_STATUSES:
+            raise OrderConfirmationError(
+                f'La commande #{commande.id} ne peut plus être annulée '
+                f'(statut : {commande.get_statut_display()}).',
+                status_code=409,
+            )
+
         commande.statut = Commande.STATUT_ANNULE
         commande.save(update_fields=['statut'])
 
@@ -424,6 +549,13 @@ def handle_client_reply(
             'message_delivery': outbound.get('delivery'),
         }
 
+    # Au-delà de l'annulation, la complétion d'infos ne concerne que les JP en attente.
+    if commande.statut != Commande.STATUT_JP_CAPTURE:
+        raise OrderConfirmationError(
+            f'La commande #{commande.id} est déjà au statut {commande.get_statut_display()}.',
+            status_code=409,
+        )
+
     _apply_parsed_fields(client, parsed_data)
 
     client.save(
@@ -436,7 +568,15 @@ def handle_client_reply(
         ],
     )
 
-    missing = _missing_confirmation_fields(client)
+    # Quantité : demandée pendant la collecte (pas dans le JP). On n'accepte un nombre
+    # « nu » que tant qu'on attend justement la quantité.
+    if commande.quantite is None:
+        quantite = _parse_quantity(inbound_text, expecting=True)
+        if quantite:
+            commande.quantite = quantite
+            commande.save(update_fields=['quantite'])
+
+    missing = _missing_confirmation_fields(commande)
     if missing:
         from .order_messaging import send_completion_request_message
 
@@ -452,27 +592,115 @@ def handle_client_reply(
             'message_delivery': outbound.get('delivery'),
         }
 
-    # Confirmation complète : statut + stock (décrément via Commande.save()) + règlement.
+    # Infos complètes, mais le client peut être en liste d'attente (stock insuffisant
+    # pour lui pour l'instant) : on garde sa commande en attente, sans prendre de stock.
+    # Il sera confirmé automatiquement quand ce sera son tour (voir promote_queue).
+    if not _order_is_eligible(commande):
+        from .order_messaging import send_waiting_with_info_message
+
+        outbound = send_waiting_with_info_message(commande)
+        return {
+            'status': "En liste d'attente — informations enregistrées",
+            'complet': False,
+            'en_attente': True,
+            'champs_manquants': [],
+            'commande': CommandeSerializer(commande).data,
+            'client': _client_snapshot(client),
+            'parsed': parsed_data,
+            'message_attente': outbound.get('content'),
+            'message_delivery': outbound.get('delivery'),
+        }
+
+    return _finalize_confirmation(commande, parsed_data=parsed_data)
+
+
+def _finalize_confirmation(
+    commande: Commande,
+    *,
+    parsed_data: dict[str, str] | None = None,
+    promoted: bool = False,
+) -> dict[str, Any]:
+    """Confirme la commande : statut CONFIRME (décrément stock via save) + règlement + message.
+
+    promoted=True quand la confirmation vient d'une montée en file (une place s'est libérée
+    et les informations du client étaient déjà complètes) : le message le signale.
+    """
     commande.statut = Commande.STATUT_CONFIRME
     commande.save(update_fields=['statut'])
     paiement = _ensure_paiement(commande)
 
     from .order_messaging import send_order_confirmed_message
 
-    outbound = send_order_confirmed_message(commande)
+    outbound = send_order_confirmed_message(commande, promoted=promoted)
 
     return {
         'status': 'Commande confirmée',
         'complet': True,
         'commande': CommandeSerializer(commande).data,
         'reglement': {'methode': paiement.methode, 'statut': paiement.statut},
-        'client': _client_snapshot(client),
-        'parsed': parsed_data,
+        'client': _client_snapshot(commande.client),
+        'parsed': parsed_data or {},
         'message_remerciement': outbound.get('content'),
         'message_delivery': outbound.get('delivery'),
         'facture_url': outbound.get('facture_url'),
         'etiquette_url': outbound.get('etiquette_url'),
     }
+
+
+@transaction.atomic
+def expire_commande(commande: Commande) -> dict[str, Any] | None:
+    """Expire un JP en tête de file resté incomplet trop longtemps.
+
+    On annule la commande (ce qui, via Commande.save(), fait monter le suivant de la file —
+    confirmé automatiquement s'il est déjà complet) puis on prévient le client expiré.
+    """
+    if commande.statut != Commande.STATUT_JP_CAPTURE:
+        return None
+
+    commande.statut = Commande.STATUT_ANNULE
+    commande.save(update_fields=['statut'])
+
+    from .order_messaging import send_order_expired_message
+
+    outbound = send_order_expired_message(commande)
+    return {
+        'commande_id': commande.id,
+        'message_expiration': outbound.get('content'),
+        'message_delivery': outbound.get('delivery'),
+    }
+
+
+def promote_queue(produit, variante=None, exclude_pk=None) -> None:
+    """Fait avancer la file d'attente d'une déclinaison après libération de stock/place.
+
+    Confirme automatiquement les commandes suivantes qui sont à la fois ÉLIGIBLES (stock)
+    et COMPLÈTES (toutes les infos + quantité fournies). Dès qu'on rencontre une commande
+    éligible mais incomplète, on lui demande ce qui manque et on s'arrête (elle garde sa
+    place tant qu'elle n'a pas répondu).
+    """
+    while True:
+        queryset = (
+            Commande.objects.select_related('client', 'produit', 'variante')
+            .filter(produit=produit, variante=variante, statut=Commande.STATUT_JP_CAPTURE)
+            .order_by('ordre_jp')
+        )
+        if exclude_pk:
+            queryset = queryset.exclude(pk=exclude_pk)
+
+        commande = queryset.first()
+        if commande is None or not _order_is_eligible(commande):
+            return
+
+        missing = _missing_confirmation_fields(commande)
+        if missing:
+            # Place libérée mais infos incomplètes : on prévient et on demande ce qui manque.
+            from .order_messaging import send_promotion_completion_message
+
+            send_promotion_completion_message(commande, missing)
+            return
+
+        # Place libérée et infos déjà complètes : confirmation automatique (message dédié).
+        _finalize_confirmation(commande, promoted=True)
 
 
 @transaction.atomic
@@ -515,12 +743,24 @@ def process_inbound_private_message(
         page = PageFacebook.objects.select_related('vendeur').filter(page_id=str(page_id)).first()
         vendeur = page.vendeur if page else None
 
-    commande = find_pending_commande(client, vendeur=vendeur)
-    if not commande:
-        raise OrderConfirmationError(
-            'Aucune commande JP en attente de confirmation pour ce client.',
-            status_code=404,
+    # Pour une annulation, on cherche aussi les commandes déjà confirmées/préparées,
+    # pas uniquement les JP encore en attente.
+    if _is_cancellation(message_text):
+        commande = find_pending_commande(client, vendeur=vendeur) or find_cancellable_commande(
+            client, vendeur=vendeur
         )
+        if not commande:
+            raise OrderConfirmationError(
+                'Aucune commande active à annuler pour ce client.',
+                status_code=404,
+            )
+    else:
+        commande = find_pending_commande(client, vendeur=vendeur)
+        if not commande:
+            raise OrderConfirmationError(
+                'Aucune commande JP en attente de confirmation pour ce client.',
+                status_code=404,
+            )
 
     parsed = analyze_confirmation_message(message_text, client=client)
     return handle_client_reply(

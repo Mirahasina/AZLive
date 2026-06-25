@@ -135,6 +135,7 @@ class ConfirmationMessageAnalyzer:
 
     def analyze(self, text: str, client=None) -> dict:
         from .order_confirmation import (
+            _is_quantity_line,
             _looks_like_date,
             _looks_like_phone,
             _looks_like_time,
@@ -153,6 +154,7 @@ class ConfirmationMessageAnalyzer:
                 _looks_like_date,
                 _looks_like_time,
                 _normalize_phone,
+                _is_quantity_line,
             )
         elif client:
             parsed = self._infer_from_missing_fields(
@@ -163,6 +165,7 @@ class ConfirmationMessageAnalyzer:
                 _looks_like_date,
                 _looks_like_time,
                 _normalize_phone,
+                _is_quantity_line,
             )
 
         return {
@@ -173,8 +176,11 @@ class ConfirmationMessageAnalyzer:
     def _needs_nom(self, client) -> bool:
         return not client.nom or client.nom in self.PLACEHOLDER_NAMES
 
-    def _infer_single_line(self, line, client, looks_phone, looks_date, looks_time, normalize_phone):
+    def _infer_single_line(self, line, client, looks_phone, looks_date, looks_time, normalize_phone, is_quantity_line=None):
         result = {}
+        if is_quantity_line and is_quantity_line(line):
+            # Nombre seul = quantité, traitée au niveau de la commande, pas un nom/adresse.
+            return result
         if looks_phone(line):
             result['telephone'] = normalize_phone(line) or line
             return result
@@ -199,10 +205,13 @@ class ConfirmationMessageAnalyzer:
             result['heure_livraison'] = line
         return result
 
-    def _infer_from_missing_fields(self, lines, client, parsed, looks_phone, looks_date, looks_time, normalize_phone):
+    def _infer_from_missing_fields(self, lines, client, parsed, looks_phone, looks_date, looks_time, normalize_phone, is_quantity_line=None):
         for line in lines:
             if line in parsed.values():
                 continue
+            if is_quantity_line and is_quantity_line(line):
+                continue
+            is_text = not looks_phone(line) and not looks_date(line) and not looks_time(line)
             if 'telephone' not in parsed and not client.telephone and looks_phone(line):
                 parsed['telephone'] = normalize_phone(line) or line
             elif 'heure_livraison' not in parsed and not client.heure_livraison_preferee and looks_time(line):
@@ -210,11 +219,17 @@ class ConfirmationMessageAnalyzer:
             elif 'date_livraison' not in parsed and not client.date_livraison_preferee and looks_date(line):
                 parsed['date_livraison'] = line
             elif (
+                'nom' not in parsed
+                and self._needs_nom(client)
+                and is_text
+            ):
+                # Le nom manque encore : la première ligne texte libre le complète,
+                # peu importe l'ordre d'arrivée des autres informations.
+                parsed['nom'] = line
+            elif (
                 'adresse' not in parsed
                 and not client.adresse
-                and not looks_phone(line)
-                and not looks_date(line)
-                and not looks_time(line)
+                and is_text
                 and line != parsed.get('nom')
                 and line != (client.nom if not self._needs_nom(client) else None)
             ):

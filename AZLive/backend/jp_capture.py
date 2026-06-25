@@ -18,31 +18,56 @@ class JPCaptureError(Exception):
 def create_jp_commande(client, produit, live=None, canal='', comment_id=None, variante=None):
     """Crée une commande JP (ordre atomique) puis envoie le message au client.
 
-    Le contenu (confirmation si 1er, liste d'attente sinon) est construit et livré par
+    La quantité n'est PAS lue dans le commentaire : elle est demandée plus tard, pendant
+    la collecte des informations (nom, finday, adiresy, daty, ora, isa). La commande est
+    donc créée avec quantite = None (non encore renseignée).
+
+    Le contenu (instructions si éligible, liste d'attente sinon) est construit et livré par
     send_jp_confirmation_message, qui enregistre aussi le message sortant. Pour un
     commentateur Facebook, comment_id permet la réponse privée (private_replies).
     La variante (déduite du code JP) est rattachée afin que le décrément de stock à la
     confirmation porte sur la bonne déclinaison. L'envoi (appel réseau) est fait hors
     transaction pour ne pas garder le verrou.
-    """
-    with transaction.atomic():
-        max_order = (
-            Commande.objects.select_for_update()
-            .filter(produit=produit)
-            .aggregate(max_ordre=Max('ordre_jp'))['max_ordre']
-            or 0
-        )
-        ordre_jp = max_order + 1
-        commande = Commande.objects.create(
-            client=client,
-            produit=produit,
-            variante=variante,
-            ordre_jp=ordre_jp,
-            statut=Commande.STATUT_JP_CAPTURE,
-            live=live,
-        )
 
-    send_jp_confirmation_message(commande, comment_id=comment_id)
+    Si le client a déjà une commande JP en attente pour la même déclinaison (même produit
+    et même variante), on réutilise cette commande au lieu d'en créer un doublon — le
+    client n'envoie pas plusieurs JP, c'est une re-publication accidentelle.
+    """
+    reused = False
+    with transaction.atomic():
+        existing = (
+            Commande.objects.select_for_update()
+            .filter(
+                client=client,
+                produit=produit,
+                variante=variante,
+                statut=Commande.STATUT_JP_CAPTURE,
+            )
+            .order_by('ordre_jp')
+            .first()
+        )
+        if existing:
+            commande = existing
+            reused = True
+        else:
+            max_order = (
+                Commande.objects.select_for_update()
+                .filter(produit=produit)
+                .aggregate(max_ordre=Max('ordre_jp'))['max_ordre']
+                or 0
+            )
+            ordre_jp = max_order + 1
+            commande = Commande.objects.create(
+                client=client,
+                produit=produit,
+                variante=variante,
+                ordre_jp=ordre_jp,
+                statut=Commande.STATUT_JP_CAPTURE,
+                live=live,
+            )
+
+    if not reused:
+        send_jp_confirmation_message(commande, comment_id=comment_id)
     return commande
 
 
@@ -197,7 +222,12 @@ def process_social_comment(
 
     variante = resolve_variante_for_analysis(produit, analysis)
     commande = create_jp_commande(
-        client, produit, live=live, canal=channel, comment_id=comment_id, variante=variante
+        client,
+        produit,
+        live=live,
+        canal=channel,
+        comment_id=comment_id,
+        variante=variante,
     )
     return {
         'status': 'JP capturé avec succès',
