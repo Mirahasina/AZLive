@@ -4,6 +4,7 @@ from typing import Any
 from django.conf import settings
 
 from .facebook_messenger import send_facebook_private_message, send_facebook_private_reply
+from .message_humanizer import emoji, first_name, greeting, pick, thanks
 from .models import Commande, Message
 
 logger = logging.getLogger(__name__)
@@ -93,27 +94,66 @@ def build_jp_confirmation_message(commande: Commande) -> str:
 
     client = commande.client
     produit = commande.produit
-    if not _order_is_eligible(commande):
-        return (
-            f"Salama {client.nom}, tafiditra ao anatin'ny lisitra miandry ho an'ny '{produit.nom}' ianao "
-            f"(Laharana faha-{commande.ordre_jp}). Hampilazainay ianao raha misy fahafahana."
-        )
+    hello = greeting(client.nom)
 
-    return (
-        f"Salama {client.nom}, nahazo ny JP-nao amin'ny '{produit.nom}' izahay (Commande #{commande.id}).\n\n"
-        "Mba hafahana ny baikonao, alefaso anay ny anaranao, finday, adiresy, daty/ora "
-        "ary ny isa (firy) tianao — afaka alefa amin'ny iray na maro message, araka izay mety aminao. "
-        "Tsy mila manaraka modèle manokana."
+    if not _order_is_eligible(commande):
+        intro = pick(
+            [
+                f"{hello} 😊 Voaray ny JP-nao ho an'ny '{produit.nom}'.",
+                f"{hello}! Efa azonay ny JP-nao ho an'ny '{produit.nom}'.",
+                f"{hello}! Tonga soa ny JP-nao ho an'ny '{produit.nom}'.",
+            ]
+        )
+        attente = pick(
+            [
+                f"Fa efa misy nanao commande mialoha anao, ka ao amin'ny liste d'attente ianao aloha (numéro {commande.ordre_jp}).",
+                f"Saingy mbola misy olona eo alohanao, ka miandry kely ianao izao (numéro {commande.ordre_jp} amin'ny liste d'attente).",
+                f"Mbola eo am-piandrasana ny anjaranao ianao izao (numéro {commande.ordre_jp} amin'ny liste d'attente).",
+            ]
+        )
+        rassurance = pick(
+            [
+                "Hilazanay anao raha vao misy toerana. Misaotra amin'ny faharetana!",
+                "Raha vao misy malalaka dia tofandrenesinay anao. Misaotra e!",
+                "Aza manahy, holazainay anao raha vao tonga ny anjaranao.",
+            ]
+        )
+        return f'{intro} {attente} {rassurance}{emoji(prob=0.4)}'
+
+    intro = pick(
+        [
+            f"{hello} 😊 Voaray ny JP-nao ho an'ny '{produit.nom}' (Commande #{commande.id}).",
+            f"{hello}! Efa azonay ny JP-nao ho an'ny '{produit.nom}' (Commande #{commande.id}).",
+            f"{hello}! Tonga soa ny JP-nao ho an'ny '{produit.nom}' (Commande #{commande.id}).",
+        ]
     )
+    demande = pick(
+        [
+            "Mba alefaso aminay azafady ny anaranao, numéro, adresse, daty sy ora "
+            "hanaterana, ary firy no alainao.",
+            "Mba hahavita ny commande, omeo anay ny anaranao, numéro, adresse, daty sy "
+            "ora hanaterana, ary firy no alainao.",
+            "Lazao anay azafady ny anaranao, numéro, adresse, daty sy ora hanaterana, "
+            "ary firy no alainao.",
+        ]
+    )
+    souplesse = pick(
+        [
+            "Afaka soratanao tsikelikely ihany, tsy maika, tsy misy modèle tsy maintsy arahina.",
+            "Azonao zaraina amin'ny message maromaro, araka izay mora aminao.",
+            "Ataovy mora fotsiny, tsy voatery atao indray miaraka.",
+        ]
+    )
+    return f'{intro}\n\n{demande} {souplesse}{emoji(prob=0.3)}'
 
 
 FIELD_COMPLETION_PROMPTS = {
     'nom': 'ny anaranao',
-    'telephone': 'ny findainao',
-    'adresse': 'ny adiresinao',
-    'date_livraison': 'ny daty tianao halefa',
-    'heure_livraison': 'ny ora tianao (ohatra 14h)',
-    'quantite': 'ny isa tianao (firy, ohatra 2)',
+    'telephone': 'ny numéro-nao',
+    'adresse': 'ny adresse-nao',
+    'date_livraison': 'ny daty hanaterana',
+    'heure_livraison': 'ny ora (ohatra 14h)',
+    'quantite': 'firy no alainao (ohatra 2)',
 }
 
 
@@ -123,23 +163,32 @@ def build_completion_request_message(commande: Commande, missing_fields: list[st
     if client.nom and client.nom not in {'Client Live', 'Client Facebook', 'Client TikTok'}:
         received.append(f"anarana ({client.nom})")
     if client.telephone:
-        received.append(f"finday ({client.telephone})")
+        received.append(f"numéro ({client.telephone})")
     if client.adresse:
-        received.append(f"adiresy ({client.adresse})")
+        received.append(f"adresse ({client.adresse})")
     if client.date_livraison_preferee:
         received.append(f"daty ({client.date_livraison_preferee.strftime('%d/%m/%Y')})")
     if client.heure_livraison_preferee:
         received.append(f"ora ({client.heure_livraison_preferee.strftime('%H:%M')})")
     if commande.quantite:
-        received.append(f"isa ({commande.quantite})")
+        received.append(f"firy ({commande.quantite})")
 
     missing_labels = [FIELD_COMPLETION_PROMPTS[field] for field in missing_fields if field in FIELD_COMPLETION_PROMPTS]
-    intro = "Misaotra!"
+    intro = f'{thanks()}!'
     if received:
-        intro += f" Efa voaray : {', '.join(received)}."
+        recu_label = pick(['Efa voaray', 'Efa azonay', 'Voaray tsara'])
+        intro += f' {recu_label} : {", ".join(received)}.'
     if missing_labels:
-        intro += f"\nMbola ilaina : {', '.join(missing_labels)}."
-    intro += "\nAlefaso amin'ny message manaraka — afaka misy fizarana, tsy mila modèle."
+        manque_label = pick(['Mbola mila', 'Ny sisa ilaina', 'Mbola ilaina'])
+        intro += f'\n{manque_label} : {", ".join(missing_labels)}.'
+    cloture = pick(
+        [
+            "Azonao alefa amin'ny message manaraka, tsy maika.",
+            "Andrasanay rehefa vonona ianao, soraty fotsiny eto.",
+            "Azonao soratana tsikelikely ihany, araka izay mora aminao.",
+        ]
+    )
+    intro += f'\n{cloture}{emoji(prob=0.3)}'
     return intro
 
 
@@ -153,11 +202,28 @@ def build_waiting_with_info_message(commande: Commande) -> str:
     """Le client a tout fourni mais reste en liste d'attente (stock pas encore dispo)."""
     client = commande.client
     produit = commande.produit
-    return (
-        f"Misaotra {client.nom}! Voarainay avokoa ny mombamomba anao ho an'ny '{produit.nom}'. "
-        f"Mbola misy mpividy mialoha anao amin'izao (Laharana faha-{commande.ordre_jp}). "
-        "Raha vao misy fahafahana, hofaranana hoazy ny baikonao ary hampandrenesinay anao. Misaotra amin'ny faharetana!"
+    fn = first_name(client.nom)
+    nom_court = f' {fn}' if fn else ''
+    intro = pick(
+        [
+            f"{thanks()}{nom_court}! Voaray daholo ny infos-nao ho an'ny '{produit.nom}'.",
+            f"{greeting(client.nom)}! Azonay tsara ny infos rehetra momba ny '{produit.nom}'.",
+            f"{greeting(client.nom)}! Feno daholo ny infos-nao ho an'ny '{produit.nom}'. {thanks()}!",
+        ]
     )
+    attente = pick(
+        [
+            f"Fa mbola misy olona eo alohanao izao (numéro {commande.ordre_jp} amin'ny liste d'attente).",
+            f"Mbola miandry ny anjaranao ihany ianao (numéro {commande.ordre_jp}).",
+        ]
+    )
+    rassurance = pick(
+        [
+            "Raha vao misy toerana dia confirmé-nay ny commande-nao ary lazainay aminao. Misaotra amin'ny faharetana!",
+            "Hovitainay avy hatrany ny commande-nao raha vao tonga ny anjaranao. Misaotra amin'ny fandeferana!",
+        ]
+    )
+    return f'{intro} {attente} {rassurance}{emoji(prob=0.4)}'
 
 
 def send_waiting_with_info_message(commande: Commande) -> dict[str, Any]:
@@ -171,12 +237,14 @@ def build_promotion_completion_message(commande: Commande, missing_fields: list[
     client = commande.client
     produit = commande.produit
     labels = [FIELD_COMPLETION_PROMPTS[field] for field in missing_fields if field in FIELD_COMPLETION_PROMPTS]
+    # Ancres testées : « toerana malalaka » et « alefaso ».
+    bonne_nouvelle = pick(['vaovao tsara', 'vaovao mahafaly', 'fa misy vaovao'])
     message = (
-        f"Salama {client.nom}, vaovao tsara! Nisy toerana malalaka ho an'ny '{produit.nom}', "
-        f"ka afaka manohy ny baikonao ianao izao."
+        f"{greeting(client.nom)}, {bonne_nouvelle}! Nisy toerana malalaka ho an'ny '{produit.nom}', "
+        f"ka afaka manohy ny commande-nao ianao izao."
     )
     if labels:
-        message += f"\nMba alefaso haingana : {', '.join(labels)} mba hahafahanay manamafy azy."
+        message += f"\nMba alefaso haingana azafady : {', '.join(labels)} mba hahavitanay azy.{emoji(prob=0.4)}"
     return message
 
 
@@ -199,19 +267,39 @@ def build_thank_you_message(commande: Commande, *, promoted: bool = False) -> st
 
     # Cas « promu » : le client était en liste d'attente, une place s'est libérée et
     # comme ses informations étaient déjà complètes, sa commande est prise en compte.
+    # Ancre testée : « toerana malalaka ».
     if promoted:
-        intro = (
-            f"Vaovao tsara {client.nom} ! Nisy toerana malalaka ka voaray sy voafahana "
-            f"ny baikonao '{produit.nom}' (#{commande.id})."
+        intro = pick(
+            [
+                f"{greeting(client.nom)}, vaovao tsara! Nisy toerana malalaka, ka vita sy "
+                f"confirmé ny commande-nao '{produit.nom}' (#{commande.id}).",
+                f"{greeting(client.nom)}, vaovao mahafaly! Nisy toerana malalaka, ka vita "
+                f"ny commande-nao '{produit.nom}' (#{commande.id}).",
+            ]
         )
     else:
-        intro = f"Misaotra {client.nom} ! Ny baikonao '{produit.nom}' (#{commande.id}) voafahana."
+        fn = first_name(client.nom)
+        nom_court = f' {fn}' if fn else ' tompoko'
+        intro = pick(
+            [
+                f"{greeting(client.nom)}! Vita ny commande-nao '{produit.nom}' (#{commande.id}). {thanks()}!",
+                f"{thanks()}{nom_court}! Confirmé ny commande-nao '{produit.nom}' (#{commande.id}).",
+                f"{thanks()} betsaka{nom_court}! Vita tsara ny commande-nao "
+                f"'{produit.nom}' (#{commande.id}).",
+            ]
+        )
 
+    livraison = pick(
+        [
+            f"Ho avy ny livraison{(' ' + delivery_slot) if delivery_slot else ''}.",
+            f"Haterinay ny entana{(' ' + delivery_slot) if delivery_slot else ''}.",
+        ]
+    )
     return (
-        f"{intro}\n\n"
-        f"Facture PDF : {urls['facture_url']}\n"
+        f"{intro}{emoji(prob=0.5)}\n\n"
+        f"Facture : {urls['facture_url']}\n"
         f"Etiquette livreur : {urls['etiquette_url']}\n\n"
-        f"Ho avy ny livraison{(' ' + delivery_slot) if delivery_slot else ''}."
+        f"{livraison}"
     )
 
 
@@ -227,10 +315,20 @@ def send_jp_confirmation_message(
 def build_order_cancelled_message(commande: Commande) -> str:
     client = commande.client
     produit = commande.produit
-    return (
-        f"Ekena {client.nom}, nofoanana ny baikonao '{produit.nom}' (#{commande.id}). "
-        "Raha diso izany na te-hanao baiko vaovao ianao, mamaly fotsiny eto. Misaotra!"
+    intro = pick(
+        [
+            f"Ekena {client.nom}, nofoanana ny commande-nao '{produit.nom}' (#{commande.id}).",
+            f"Azo {client.nom}, nesorina ny commande-nao '{produit.nom}' (#{commande.id}).",
+            f"Ekena tsara, voafoana ny commande-nao '{produit.nom}' (#{commande.id}).",
+        ]
     )
+    cloture = pick(
+        [
+            "Raha nisy diso na te-hanao commande vaovao ianao, valio fotsiny eto. Misaotra!",
+            "Raha mbola mila zavatra ianao, soraty eto fotsiny dia eto izahay. Misaotra e!",
+        ]
+    )
+    return f'{intro} {cloture}'
 
 
 def send_order_cancelled_message(commande: Commande) -> dict[str, Any]:
@@ -242,11 +340,21 @@ def send_order_cancelled_message(commande: Commande) -> dict[str, Any]:
 def build_order_expired_message(commande: Commande) -> str:
     client = commande.client
     produit = commande.produit
-    return (
-        f"Salama {client.nom}, nofoanana ny baikonao '{produit.nom}' (#{commande.id}) satria tsy "
-        "voafeno tao anatin'ny fe-potoana ny mombamomba ilaina, ka nomena ny manaraka ao amin'ny "
-        "lisitra miandry ny toerana. Raha mbola liana ianao, mamaly fotsiny eto. Misaotra!"
+    intro = pick(
+        [
+            f"{greeting(client.nom)}, voafoana ny commande-nao '{produit.nom}' (#{commande.id}) "
+            "satria tsy tonga tao anatin'ny fotoana ny infos ilaina, ka nomena ny manaraka ny toerana.",
+            f"{greeting(client.nom)}, lany ny fotoana hamenoana ny infos ho an'ny commande "
+            f"'{produit.nom}' (#{commande.id}), ka voatery nomena ny manaraka ny toerana.",
+        ]
     )
+    cloture = pick(
+        [
+            "Raha mbola liana ianao, valio fotsiny eto. Misaotra!",
+            "Raha te-hanao commande indray ianao, soraty eto fotsiny dia hanampy anao izahay. Misaotra e!",
+        ]
+    )
+    return f'{intro} {cloture}'
 
 
 def send_order_expired_message(commande: Commande) -> dict[str, Any]:

@@ -4,6 +4,7 @@ from django.core.management.base import BaseCommand
 from django.db.models import Max
 from django.utils import timezone
 
+from backend.message_humanizer import greeting, pick
 from backend.models import Commande, Message
 from backend.order_confirmation import _order_is_eligible, expire_commande
 from backend.services import MessagingService
@@ -62,10 +63,13 @@ class Command(BaseCommand):
 
             if relances_envoyees < max_relances:
                 relance_num = relances_envoyees + 1
+                rappel = pick([
+                    "Mbola miandry kely ny infos-nao izahay",
+                    "Mba mila ny infos-nao ihany izahay",
+                ])
                 contenu = (
-                    f"Salama {commande.client.nom}, fampatsiahivana faha-{relance_num} momba ny baikonao "
-                    f"'{commande.produit.nom}'. Mba alefaso ny anarana, finday, adiresy, daty/ora ary ny isa "
-                    f"mba hahafahanay manamafy azy."
+                    f"{greeting(commande.client.nom)}! Fampahatsiahivana kely momba ny commande-nao "
+                    f"'{commande.produit.nom}'. {rappel} : anarana, numéro, adresse, daty sy ora ary firy no alainao, azafady."
                 )
                 Message.objects.create(commande=commande, contenu=contenu, numero_relance=relance_num)
                 MessagingService.send_relance_message(commande.client, commande.produit, relance_num)
