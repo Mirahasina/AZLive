@@ -415,7 +415,7 @@ class BackendGapsAPITest(TestCase):
         }, content_type='application/json')
         self.assertEqual(response_a.status_code, 201)
         self.assertEqual(response_a.json()['commande']['ordre_jp'], 1)
-        self.assertIn("nahazo ny JP-nao amin'ny", response_a.json()['message_envoye'])
+        self.assertIn('JP-nao', response_a.json()['message_envoye'])
 
         response_b = self.client.post('/api/jp-capture/', {
             'comment_text': f"JP {self.produit.nom}",
@@ -424,7 +424,7 @@ class BackendGapsAPITest(TestCase):
         }, content_type='application/json')
         self.assertEqual(response_b.status_code, 201)
         self.assertEqual(response_b.json()['commande']['ordre_jp'], 2)
-        self.assertIn("lisitra miandry", response_b.json()['message_envoye'])
+        self.assertIn("liste d'attente", response_b.json()['message_envoye'])
 
         response_c = self.client.post('/api/jp-capture/', {
             'comment_text': f"JP {self.produit.nom}",
@@ -1210,7 +1210,7 @@ class QuantiteEtAnnulationTest(TestCase):
         # Message dédié : commande prise en compte car une place s'est libérée.
         last_b = cmd_b.messages.filter(direction=Message.DIRECTION_OUTBOUND).order_by('-date_envoi').first()
         self.assertIn('toerana malalaka', last_b.contenu)
-        self.assertIn('voafahana', last_b.contenu)
+        self.assertIn('vita', last_b.contenu)
 
     def test_promotion_incomplet_demande_les_infos(self):
         self.variante.stock = 1

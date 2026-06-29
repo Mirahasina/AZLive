@@ -212,6 +212,17 @@ FACEBOOK_WEBHOOK_FIELDS = os.environ.get(
 # URL publique de l'API (liens facture / étiquette dans les messages privés)
 AZLIVE_PUBLIC_BASE_URL = os.environ.get('AZLIVE_PUBLIC_BASE_URL', 'http://localhost:8000')
 
+# --- Compréhension des commentaires par LLM (repli du regex) ---
+# Désactivé par défaut : sans clé/URL, le pipeline reste 100% regex (gratuit, hermétique).
+# API compatible OpenAI (chat completions). Exemples GRATUITS :
+#   - Groq free tier : BASE_URL=https://api.groq.com/openai/v1, MODEL=llama-3.3-70b-versatile
+#   - Ollama local   : BASE_URL=http://localhost:11434/v1, MODEL=llama3.1 (API_KEY non requise)
+AZLIVE_LLM_ENABLED = os.environ.get('AZLIVE_LLM_ENABLED', 'false').lower() in ('1', 'true', 'yes', 'on')
+AZLIVE_LLM_BASE_URL = os.environ.get('AZLIVE_LLM_BASE_URL', '')
+AZLIVE_LLM_API_KEY = os.environ.get('AZLIVE_LLM_API_KEY', '')
+AZLIVE_LLM_MODEL = os.environ.get('AZLIVE_LLM_MODEL', '')
+AZLIVE_LLM_TIMEOUT = int(os.environ.get('AZLIVE_LLM_TIMEOUT', '12'))
+
 # File d'attente JP : relances + expiration automatique du client en tête.
 # Délai (minutes) sans nouvelle d'un client ÉLIGIBLE (en tête de file) avant une relance.
 AZLIVE_JP_RELANCE_DELAY_MINUTES = int(os.environ.get('AZLIVE_JP_RELANCE_DELAY_MINUTES', '30'))

@@ -1,7 +1,7 @@
 from django.db import models, transaction
 from django.db.models import Max
 
-from .ai import JPCommentAnalyzer
+from .ai import HybridCommentAnalyzer
 from .jp_codes import normalize_jp_code
 from .models import Client, Commande, Live, LiveCodeJP, PageFacebook, Produit, Vendeur
 from .order_messaging import send_jp_confirmation_message
@@ -239,8 +239,8 @@ def process_social_comment(
         page = PageFacebook.objects.filter(page_id=str(page_id)).first() if page_id else None
         live = resolve_active_live(vendeur, page_id=page_id, page_name=page.nom if page else None)
 
-    analyzer = JPCommentAnalyzer()
-    analysis = analyzer.analyze(comment_text)
+    analyzer = HybridCommentAnalyzer()
+    analysis = analyzer.analyze(comment_text, vendeur=vendeur, live=live)
 
     if analysis.get('intent') != 'achat':
         return {

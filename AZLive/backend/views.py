@@ -13,6 +13,7 @@ from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from rest_framework.permissions import IsAuthenticated, AllowAny
 
 from .ai import JPCommentAnalyzer
+from .message_humanizer import emoji, greeting, pick
 from .models import Client, Commande, Livraison, Livreur, Paiement, Produit, ProduitImage, Vendeur, Message, Collaborateur, Live, LiveCodeJP, Variante, PageFacebook, ParametresPlateforme
 from .serializers import (
     ClientSerializer,
@@ -180,9 +181,13 @@ class JPCaptureAPIView(APIView):
         if ordre_jp == 1:
             message_content = self.build_auto_message(client, produit)
         else:
+            intro = pick([
+                f"{greeting(client.nom)} 😊 Voaray ny JP-nao ho an'ny '{produit.nom}'.",
+                f"{greeting(client.nom)}! Efa azonay ny JP-nao ho an'ny '{produit.nom}'.",
+            ])
             message_content = (
-                f"Salama {client.nom}, tafiditra ao anatin'ny lisitra miandry (liste d'attente) ho an'ny '{produit.nom}' ianao (Laharana faha-{ordre_jp}). "
-                f"Hampilazainay ianao raha misy fahafahana avy amin'ireo nialoha anao."
+                f"{intro} Fa efa misy nanao commande mialoha, ka ao amin'ny liste d'attente "
+                f"ianao izao (numéro {ordre_jp}). Hilazanay anao raha vao misy toerana.{emoji(prob=0.4)}"
             )
 
         message = Message.objects.create(
@@ -248,9 +253,12 @@ class JPCaptureAPIView(APIView):
         return None
 
     def build_auto_message(self, client, produit):
+        demande = pick([
+            "Mba alefaso anay azafady ny anaranao, numéro, adresse ary ny daty hanaterana.",
+            "Mba hahavita ny commande, omeo anay ny anaranao, numéro, adresse ary ny daty hanaterana.",
+        ])
         return (
-            f"Salama {client.nom}, nahazo ny JP-nao amin'ny '{produit.nom}' izahay. "
-            "Mba hafahao ny baikonao amin'ny alalan'ny fandefasana ny: anarana feno, finday, adiresy ary ny daty tianao hanaterana azy."
+            f"{greeting(client.nom)} 😊 Voaray ny JP-nao ho an'ny '{produit.nom}'. {demande}{emoji(prob=0.3)}"
         )
 
 
