@@ -255,6 +255,20 @@ TIKTOK_LOGIN_SUCCESS_URL = os.environ.get(
     'http://localhost:3000/auth/tiktok/success',
 )
 TIKTOK_OAUTH_SCOPES = os.environ.get('TIKTOK_OAUTH_SCOPES', 'user.info.basic')
+# OAuth client public (formulaire de commande partagé aux spectateurs TikTok)
+TIKTOK_PUBLIC_REDIRECT_URI = os.environ.get(
+    'TIKTOK_PUBLIC_REDIRECT_URI',
+    'http://localhost:8000/api/public/tiktok/callback/',
+)
+TIKTOK_PUBLIC_OAUTH_SCOPES = os.environ.get(
+    'TIKTOK_PUBLIC_OAUTH_SCOPES',
+    'user.info.basic,user.info.profile',
+)
+# URL du frontend où rediriger le client après connexion TikTok
+AZLIVE_PUBLIC_ORDER_BASE_URL = os.environ.get(
+    'AZLIVE_PUBLIC_ORDER_BASE_URL',
+    'http://localhost:3000',
+)
 
 # TikTools — commentaires live TikTok en temps réel
 TIKTOOL_API_KEY = os.environ.get('TIKTOOL_API_KEY', '')

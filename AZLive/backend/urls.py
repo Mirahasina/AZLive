@@ -49,7 +49,11 @@ from .auth_views import (
 from .webhooks import FacebookWebhookView, TikTokWebhookView
 from .live_views import LiveDemarrerAPIView, LiveArreterAPIView
 from .media_views import MediaMTXAuthAPIView
-from .public_form_views import PublicOrderFormAPIView
+from .public_form_views import (
+    PublicOrderFormAPIView,
+    PublicTikTokCallbackAPIView,
+    PublicTikTokLoginAPIView,
+)
 
 urlpatterns = [
     # Auth
@@ -113,6 +117,8 @@ urlpatterns = [
     path('jp-relance/', JPRelanceAPIView.as_view(), name='jp-relance'),
 
     # Formulaire public de commande (live TikTok — collecte indirecte des infos client)
+    path('public/lives/<int:live_id>/tiktok-login/', PublicTikTokLoginAPIView.as_view(), name='public-tiktok-login'),
+    path('public/tiktok/callback/', PublicTikTokCallbackAPIView.as_view(), name='public-tiktok-callback'),
     path('public/lives/<int:live_id>/order-form/', PublicOrderFormAPIView.as_view(), name='public-order-form'),
 
     # Webhooks réseaux sociaux

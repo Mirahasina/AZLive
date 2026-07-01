@@ -1,20 +1,21 @@
 """Formulaire public de collecte d'informations client (live TikTok).
 
-TikTok n'autorise pas l'automatisation des messages privés (DM). On ne peut donc pas
-envoyer automatiquement la demande d'informations au client comme sur Facebook. À la
-place, le vendeur partage un lien public par live : le client y saisit son @TikTok,
-retrouve les commandes (JP) déjà capturées pendant ce live, puis complète ses
-informations de livraison (nom, téléphone, adresse, date/heure) et la quantité.
+TikTok n'autorise pas l'automatisation des messages privés (DM). Le vendeur partage
+un lien public par live. Le client s'identifie automatiquement via TikTok Login :
+l'app récupère son @ et retrouve ses commandes JP capturées pendant le live, ou lui
+indique de commander d'abord dans les commentaires du live.
 
-La soumission réutilise la logique canonique de confirmation (`confirm_commande_from_message`),
-exactement comme si le client avait répondu en message privé : même gestion de la file
-d'attente, du stock et de la confirmation.
-
-Endpoints (AllowAny — pensés pour un partage public) :
+Endpoints (AllowAny) :
+  GET  /api/public/lives/<live_id>/tiktok-login/     → URL OAuth TikTok (client)
+  GET  /api/public/tiktok/callback/                   → callback OAuth → redirect frontend
   GET  /api/public/lives/<live_id>/order-form/?handle=<@tiktok>
   POST /api/public/lives/<live_id>/order-form/
 """
+import urllib.parse
+
+from django.conf import settings
 from django.db import models
+from django.http import HttpResponseRedirect
 from django.shortcuts import get_object_or_404
 from rest_framework import status
 from rest_framework.permissions import AllowAny
@@ -24,6 +25,13 @@ from rest_framework.views import APIView
 from .jp_capture import normalize_tiktok_username
 from .models import Client, Commande, Live, LiveCodeJP
 from .order_confirmation import OrderConfirmationError, confirm_commande_from_message
+from .tiktok_oauth import (
+    TikTokOAuthError,
+    authenticate_public_client_with_code,
+    build_public_oauth_url,
+    generate_public_oauth_state,
+    tiktok_configured,
+)
 
 REQUIRED_CLIENT_FIELDS = ('nom', 'telephone', 'adresse', 'date_livraison', 'heure_livraison')
 
@@ -190,3 +198,65 @@ class PublicOrderFormAPIView(APIView):
             },
             status=status.HTTP_200_OK if results else status.HTTP_400_BAD_REQUEST,
         )
+
+
+def _public_order_frontend_url(live_id: int, **query) -> str:
+    base = settings.AZLIVE_PUBLIC_ORDER_BASE_URL.rstrip('/')
+    qs = urllib.parse.urlencode(query)
+    return f'{base}/commander/{live_id}' + (f'?{qs}' if qs else '')
+
+
+class PublicTikTokLoginAPIView(APIView):
+    """Démarre l'identification TikTok pour un client (formulaire public)."""
+
+    permission_classes = [AllowAny]
+
+    def get(self, request, live_id: int):
+        get_object_or_404(Live, pk=live_id)
+        if not tiktok_configured():
+            return Response(
+                {'detail': 'Connexion TikTok non configurée sur le serveur.'},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+        state, challenge = generate_public_oauth_state(live_id)
+        return Response(
+            {'auth_url': build_public_oauth_url(state, challenge)},
+            status=status.HTTP_200_OK,
+        )
+
+
+class PublicTikTokCallbackAPIView(APIView):
+    """Callback OAuth TikTok client → redirection vers le formulaire avec handle."""
+
+    permission_classes = [AllowAny]
+
+    def get(self, request):
+        error = request.query_params.get('error')
+        live_id_param = request.query_params.get('live_id', '1')
+
+        if error:
+            description = request.query_params.get('error_description', error)
+            try:
+                live_id = int(live_id_param)
+            except ValueError:
+                live_id = 1
+            return HttpResponseRedirect(
+                _public_order_frontend_url(live_id, error=description)
+            )
+
+        code = request.query_params.get('code')
+        state = request.query_params.get('state')
+        if not code:
+            return HttpResponseRedirect(
+                _public_order_frontend_url(1, error='Connexion TikTok annulée.')
+            )
+
+        try:
+            live_id, handle = authenticate_public_client_with_code(code, state)
+            return HttpResponseRedirect(
+                _public_order_frontend_url(live_id, handle=handle)
+            )
+        except TikTokOAuthError as exc:
+            return HttpResponseRedirect(
+                _public_order_frontend_url(1, error=exc.message)
+            )
