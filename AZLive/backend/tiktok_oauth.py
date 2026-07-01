@@ -249,7 +249,8 @@ def validate_public_oauth_state(state: str) -> tuple[int, str]:
 
 
 def build_public_oauth_url(state: str, code_challenge: str) -> str:
-    redirect_uri = settings.TIKTOK_PUBLIC_REDIRECT_URI
+    # Même redirect_uri que la connexion vendeur (déjà enregistrée dans le portail TikTok).
+    redirect_uri = settings.TIKTOK_REDIRECT_URI
     scopes = settings.TIKTOK_PUBLIC_OAUTH_SCOPES
     params = {
         'client_key': settings.TIKTOK_CLIENT_KEY,
@@ -296,7 +297,7 @@ def authenticate_public_client_with_code(code: str, state: str) -> tuple[int, st
     """Échange le code OAuth et renvoie (live_id, handle) sans créer de compte vendeur."""
     live_id, code_verifier = validate_public_oauth_state(state)
     token_payload = exchange_code_for_tokens(
-        code, code_verifier, redirect_uri=settings.TIKTOK_PUBLIC_REDIRECT_URI
+        code, code_verifier, redirect_uri=settings.TIKTOK_REDIRECT_URI
     )
     profile = get_public_user_profile(token_payload['access_token'])
     handle = resolve_public_client_handle(profile)

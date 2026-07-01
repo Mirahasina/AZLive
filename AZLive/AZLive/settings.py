@@ -255,10 +255,10 @@ TIKTOK_LOGIN_SUCCESS_URL = os.environ.get(
     'http://localhost:3000/auth/tiktok/success',
 )
 TIKTOK_OAUTH_SCOPES = os.environ.get('TIKTOK_OAUTH_SCOPES', 'user.info.basic')
-# OAuth client public (formulaire de commande partagé aux spectateurs TikTok)
+# OAuth client public — réutilise TIKTOK_REDIRECT_URI (un seul callback à enregistrer chez TikTok)
 TIKTOK_PUBLIC_REDIRECT_URI = os.environ.get(
     'TIKTOK_PUBLIC_REDIRECT_URI',
-    'http://localhost:8000/api/public/tiktok/callback/',
+    TIKTOK_REDIRECT_URI,
 )
 TIKTOK_PUBLIC_OAUTH_SCOPES = os.environ.get(
     'TIKTOK_PUBLIC_OAUTH_SCOPES',
