@@ -243,6 +243,62 @@ def process_social_comment(
     analysis = analyzer.analyze(comment_text, vendeur=vendeur, live=live)
 
     if analysis.get('intent') != 'achat':
+        from .human_assistance import needs_auto_reply, needs_human_assistance
+
+        if needs_auto_reply(analysis):
+            # Réponse automatique : prix, stock, lieu, salutation
+            from .order_messaging import send_auto_reply_message
+
+            intent = (analysis.get('intent') or '').lower()
+            # Tente de résoudre un produit lié à la question si mentionné
+            produit = find_produit_for_comment(analysis, vendeur=vendeur, live=live) if analysis.get('product_query') else None
+
+            lookup = {id_field: sender_id}
+            defaults = {'nom': sender_name, 'telephone': '', 'adresse': ''}
+            client, created = Client.objects.get_or_create(**lookup, defaults=defaults)
+            placeholder_names = {'Client Live', 'Client Facebook', 'Client TikTok'}
+            if not created and client.nom in placeholder_names and sender_name not in placeholder_names:
+                client.nom = sender_name
+                client.save(update_fields=['nom'])
+
+            outbound = send_auto_reply_message(
+                client,
+                intent,
+                produit=produit,
+                vendeur=vendeur,
+                live=live,
+                comment_id=comment_id,
+                page_id=page_id,
+                canal=channel,
+            )
+            return {
+                'status': 'Réponse automatique envoyée',
+                'intent': intent,
+                'channel': channel,
+                'client_cree': created,
+                'ai_analysis': analysis,
+                'message_client': outbound.get('content'),
+                'message_delivery': outbound.get('delivery'),
+                'live_id': live.id if live else None,
+                'vendeur_id': vendeur.id if vendeur else None,
+            }
+
+        if needs_human_assistance(analysis):
+            from .human_assistance import handle_human_assistance_from_comment
+
+            return handle_human_assistance_from_comment(
+                sender_id=sender_id,
+                sender_name=sender_name,
+                comment_text=comment_text,
+                channel=channel,
+                page_id=page_id,
+                streamer_unique_id=streamer_unique_id,
+                vendeur=vendeur,
+                live=live,
+                id_field=id_field,
+                comment_id=comment_id,
+                analysis=analysis,
+            )
         return {
             'status': 'ignored',
             'detail': 'Commentaire ignoré (intention d\'achat non détectée).',

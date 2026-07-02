@@ -732,20 +732,30 @@ def process_inbound_private_message(
 
     lookup = {id_field: sender_id}
     client = Client.objects.filter(**lookup).first()
-    if not client:
-        raise OrderConfirmationError(
-            'Aucun client trouvé pour cet identifiant. Postez d\'abord un JP pendant le live.',
-            status_code=404,
-        )
 
     vendeur = None
     if page_id:
         page = PageFacebook.objects.select_related('vendeur').filter(page_id=str(page_id)).first()
         vendeur = page.vendeur if page else None
 
+    from .human_assistance import (
+        _looks_like_order_info,
+        analyze_client_message,
+        handle_human_assistance_request,
+        is_off_topic_private_message,
+        needs_human_assistance,
+    )
+
+    analysis = analyze_client_message(message_text, vendeur=vendeur)
+
     # Pour une annulation, on cherche aussi les commandes déjà confirmées/préparées,
     # pas uniquement les JP encore en attente.
     if _is_cancellation(message_text):
+        if not client:
+            raise OrderConfirmationError(
+                'Aucun client trouvé pour cet identifiant. Postez d\'abord un JP pendant le live.',
+                status_code=404,
+            )
         commande = find_pending_commande(client, vendeur=vendeur) or find_cancellable_commande(
             client, vendeur=vendeur
         )
@@ -755,14 +765,41 @@ def process_inbound_private_message(
                 status_code=404,
             )
     else:
-        commande = find_pending_commande(client, vendeur=vendeur)
+        commande = find_pending_commande(client, vendeur=vendeur) if client else None
         if not commande:
+            if needs_human_assistance(analysis) or is_off_topic_private_message(message_text):
+                if not client:
+                    raise OrderConfirmationError(
+                        'Aucun client trouvé pour cet identifiant. Postez d\'abord un JP pendant le live.',
+                        status_code=404,
+                    )
+                return handle_human_assistance_request(
+                    client=client,
+                    message_text=message_text,
+                    channel=channel,
+                    vendeur=vendeur,
+                    page_id=page_id,
+                    analysis=analysis,
+                )
             raise OrderConfirmationError(
                 'Aucune commande JP en attente de confirmation pour ce client.',
                 status_code=404,
             )
 
     parsed = analyze_confirmation_message(message_text, client=client)
+    if not _looks_like_order_info(message_text, parsed) and (
+        is_off_topic_private_message(message_text, parsed) or needs_human_assistance(analysis)
+    ):
+        return handle_human_assistance_request(
+            client=client,
+            message_text=message_text,
+            channel=channel,
+            vendeur=vendeur,
+            page_id=page_id,
+            commande=commande,
+            analysis=analysis,
+        )
+
     return handle_client_reply(
         commande,
         parsed,

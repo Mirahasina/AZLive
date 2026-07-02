@@ -48,7 +48,7 @@ SYSTEM_PROMPT = (
     "en malgache, en français, ou un mélange des deux, souvent avec des fautes. "
     "Analyse UN commentaire et renvoie UNIQUEMENT un objet JSON valide (aucun texte "
     "autour), avec ces clés :\n"
-    '- "intent": une parmi "achat", "question_prix", "question_stock", '
+    '- "intent": une parmi "achat", "question_prix", "question_stock", "lieu", '
     '"annulation", "salutation", "autre".\n'
     '- "product_query": le nom/description du produit visé (string, "" si absent).\n'
     '- "code_jp": le code de variante cité s\'il y en a un (string ou null).\n'
@@ -56,7 +56,11 @@ SYSTEM_PROMPT = (
     '- "taille": taille citée, ex. S, M, L, XL (string ou null).\n'
     '- "quantite": quantité demandée (entier ou null).\n'
     '- "confiance": ta confiance globale entre 0 et 1 (nombre).\n'
+    'NOTE: utilise "lieu" quand le client demande où se trouve le magasin, '
+    'comment se passe la livraison, ou où livrer (aiza / livraison / antoandro / adresse).\n'
     "Glossaire utile : " + MALAGASY_LEXICON
+    + " ; aiza / taiza = où (lieu) ; misy toerana ve = est-ce qu'il y a un endroit ;"
+    " livraison / aterina = livraison."
 )
 
 
