@@ -272,6 +272,8 @@ AZLIVE_PUBLIC_ORDER_BASE_URL = os.environ.get(
 
 # TikTools — commentaires live TikTok en temps réel
 TIKTOOL_API_KEY = os.environ.get('TIKTOOL_API_KEY', '')
+# Cookies session TikTok du compte streamer (sessionid + tt-target-idc) pour répondre dans le chat live
+TIKTOK_SESSION_COOKIES = os.environ.get('TIKTOK_SESSION_COOKIES', '')
 
 _extra_hosts = os.environ.get('DJANGO_EXTRA_ALLOWED_HOSTS', '')
 if _extra_hosts:

@@ -78,7 +78,8 @@ def build_tiktok_diffusion(live: Live) -> dict[str, Any] | None:
         'demo': False,
         'instructions': (
             'Lancez le live sur TikTok (app ou Live Center). '
-            'Les commentaires JP seront capturés automatiquement via TikTools.'
+            'Les commentaires JP seront capturés automatiquement via TikTools '
+            'et une réponse avec le lien formulaire sera publiée dans le chat live.'
         ),
     }
 

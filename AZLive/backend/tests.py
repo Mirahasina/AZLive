@@ -907,6 +907,74 @@ class TikToolLiveTest(TestCase):
         mock_start.assert_called_once()
 
 
+class TikTokLiveChatReplyTest(TestCase):
+    def setUp(self):
+        self.vendeur = Vendeur.objects.create(
+            nom='Vendeur TT',
+            contact='0341234567',
+            tiktok_username='@maboutique',
+        )
+        self.produit = create_test_produit(self.vendeur, nom='Robe Noire', variante={
+            'taille': 'M',
+            'couleur': 'Noire',
+            'prix_unitaire': '45000.00',
+            'stock': 10,
+            'code_jp': 'JP-ROBE-N',
+        })
+        self.live = Live.objects.create(
+            titre='Live TikTok',
+            vendeur=self.vendeur,
+            statut=Live.STATUT_EN_COURS,
+        )
+        self.client_obj = Client.objects.create(
+            nom='Client TikTok',
+            telephone='',
+            adresse='',
+            tiktok_id='viewer_1',
+        )
+        self.commande = Commande.objects.create(
+            client=self.client_obj,
+            produit=self.produit,
+            variante=self.produit.variantes.first(),
+            live=self.live,
+            statut=Commande.STATUT_JP_CAPTURE,
+            ordre_jp=1,
+        )
+
+    @override_settings(AZLIVE_PUBLIC_ORDER_BASE_URL='https://shop.example.com')
+    def test_build_tiktok_jp_comment_reply_includes_form_link(self):
+        from .order_messaging import build_tiktok_jp_comment_reply
+
+        message = build_tiktok_jp_comment_reply(self.commande)
+        self.assertIn('@viewer_1', message)
+        self.assertIn('https://shop.example.com/commander/', message)
+        self.assertIn(str(self.live.id), message)
+
+    @override_settings(
+        TIKTOOL_API_KEY='tk_test',
+        TIKTOK_SESSION_COOKIES='sessionid=abc; tt-target-idc=eu-ttp2',
+        AZLIVE_PUBLIC_ORDER_BASE_URL='https://shop.example.com',
+    )
+    def test_jp_capture_sends_tiktok_chat_reply(self):
+        with patch(
+            'backend.order_messaging.send_tiktok_live_chat_message',
+            return_value={'sent': True, 'delivered': True, 'channel': 'TikTok', 'via': 'live_chat'},
+        ) as mock_chat:
+            result = process_tiktool_chat_event(
+                'maboutique',
+                {
+                    'comment': 'JP Robe Noire',
+                    'user': {'uniqueId': 'viewer_chat', 'nickname': 'Koto'},
+                },
+            )
+        self.assertEqual(result['status'], 'JP capturé avec succès')
+        mock_chat.assert_called_once()
+        args = mock_chat.call_args[0]
+        self.assertEqual(args[0], '@maboutique')
+        self.assertIn('https://shop.example.com/commander/', args[1])
+        self.assertIn('@viewer_chat', args[1])
+
+
 class OrderConfirmationFlowTest(TestCase):
     def setUp(self):
         self.vendeur = Vendeur.objects.create(nom='Vendeur', contact='0341234567')

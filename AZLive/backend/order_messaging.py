@@ -6,12 +6,18 @@ from django.conf import settings
 from .facebook_messenger import send_facebook_private_message, send_facebook_private_reply
 from .message_humanizer import emoji, first_name, greeting, pick, thanks
 from .models import Commande, Message
+from .tiktok_live_chat import send_tiktok_live_chat_message
 
 logger = logging.getLogger(__name__)
 
 
 def _public_base_url() -> str:
     return getattr(settings, 'AZLIVE_PUBLIC_BASE_URL', 'http://localhost:8000').rstrip('/')
+
+
+def public_order_form_url(live_id: int) -> str:
+    base = getattr(settings, 'AZLIVE_PUBLIC_ORDER_BASE_URL', 'http://localhost:3000').rstrip('/')
+    return f'{base}/commander/{live_id}'
 
 
 def _document_urls(commande_id: int) -> dict[str, str]:
@@ -68,28 +74,51 @@ def _deliver_private_message(
             delivery['mock'] = False
 
     elif canal == Message.CANAL_TIKTOK:
-        # TikTok DM officiel indisponible — journaliser pour envoi manuel / WhatsApp futur
-        logger.info(
-            '[TIKTOK DM PENDING] commande #%s → @%s: %s',
-            commande.id,
-            commande.client.tiktok_id,
-            content[:120],
-        )
-        delivery['detail'] = (
-            'TikTok ne permet pas l\'envoi automatique de DM. '
-            'Copiez le message depuis la console ou utilisez WhatsApp si le client a laissé son numéro.'
-        )
+        streamer_channel = None
+        if commande.live_id and commande.live and commande.live.vendeur_id:
+            streamer_channel = commande.live.vendeur.tiktok_username
+        if streamer_channel:
+            result = send_tiktok_live_chat_message(streamer_channel, content)
+            delivery.update(result)
+            delivery['mock'] = not result.get('sent')
+        else:
+            logger.info(
+                '[TIKTOK CHAT PENDING] commande #%s → @%s (pas de @ streamer): %s',
+                commande.id,
+                commande.client.tiktok_id,
+                content[:120],
+            )
+            delivery['detail'] = (
+                'Compte TikTok du vendeur non configuré — impossible de répondre dans le chat live.'
+            )
 
     if delivery.get('mock', True):
         logger.info('[MESSAGING MOCK] commande #%s (%s): %s', commande.id, canal, content)
+        safe_content = content.encode('ascii', 'replace').decode('ascii')
         print(f'\n [ORDER MESSAGING] Message privé ({canal}) commande #{commande.id}:')
-        print(f'   > {content}\n')
+        print(f'   > {safe_content}\n')
 
     _record_outbound(commande, content, canal)
     return delivery
 
 
+def build_tiktok_jp_comment_reply(commande: Commande) -> str:
+    """Réponse publique dans le chat live TikTok avec lien vers le formulaire."""
+    handle = (commande.client.tiktok_id or '').strip()
+    salutation = f'@{handle} ' if handle else ''
+    if commande.live_id:
+        link = public_order_form_url(commande.live_id)
+        return (
+            f'Bonjour {salutation}😊 merci pour votre intérêt ! '
+            f'Complétez vos infos ici 👉 {link}'
+        )
+    return f'Bonjour {salutation}😊 merci pour votre intérêt ! Contactez le vendeur pour vos infos.'
+
+
 def build_jp_confirmation_message(commande: Commande) -> str:
+    if _detect_channel(commande) == Message.CANAL_TIKTOK:
+        return build_tiktok_jp_comment_reply(commande)
+
     from .order_confirmation import _order_is_eligible
 
     client = commande.client
