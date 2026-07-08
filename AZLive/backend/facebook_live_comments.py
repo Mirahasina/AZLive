@@ -205,3 +205,38 @@ def listener_status(live_id: int) -> dict[str, Any]:
             'live_video_id': listener.live_video_id,
             'thread': listener.name,
         }
+
+
+def ensure_facebook_comment_listener(live: Live) -> bool:
+    """Démarre le poller Facebook s'il est absent ou mort."""
+    if live.statut != Live.STATUT_EN_COURS or live.vendeur.is_demo_mode:
+        return False
+    if listener_status(live.pk).get('running'):
+        return True
+    broadcasts = list((live.diffusion_plateformes or {}).get('facebook') or [])
+    if not broadcasts:
+        return False
+    from .facebook_live import resolve_live_pages
+
+    pages = resolve_live_pages(live)
+    return start_facebook_comment_listener(live, broadcasts, pages)
+
+
+def recover_facebook_comment_listeners() -> int:
+    """Relance les pollers pour les lives en cours après redémarrage Django."""
+    from .facebook_live import resolve_live_pages
+
+    restarted = 0
+    lives = Live.objects.filter(statut=Live.STATUT_EN_COURS).select_related('vendeur')
+    for live in lives:
+        with _listeners_lock:
+            existing = _listeners.get(live.pk)
+            if existing and existing.is_alive():
+                continue
+        broadcasts = list((live.diffusion_plateformes or {}).get('facebook') or [])
+        if not broadcasts:
+            continue
+        pages = resolve_live_pages(live)
+        if start_facebook_comment_listener(live, broadcasts, pages):
+            restarted += 1
+    return restarted

@@ -65,7 +65,7 @@ INSTALLED_APPS = [
     'django.contrib.staticfiles',
     'rest_framework',
     'rest_framework.authtoken',
-    'backend',
+    'backend.apps.BackendConfig',
 ]
 
 MIDDLEWARE = [
@@ -254,7 +254,10 @@ TIKTOK_LOGIN_SUCCESS_URL = os.environ.get(
     'TIKTOK_LOGIN_SUCCESS_URL',
     'http://localhost:3000/auth/tiktok/success',
 )
-TIKTOK_OAUTH_SCOPES = os.environ.get('TIKTOK_OAUTH_SCOPES', 'user.info.basic')
+TIKTOK_OAUTH_SCOPES = os.environ.get(
+    'TIKTOK_OAUTH_SCOPES',
+    'user.info.basic,user.info.profile',
+)
 # OAuth client public — réutilise TIKTOK_REDIRECT_URI (un seul callback à enregistrer chez TikTok)
 TIKTOK_PUBLIC_REDIRECT_URI = os.environ.get(
     'TIKTOK_PUBLIC_REDIRECT_URI',

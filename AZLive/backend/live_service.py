@@ -9,6 +9,7 @@ from .facebook_live import (
     stop_facebook_broadcasts,
 )
 from .facebook_live_comments import (
+    ensure_facebook_comment_listener,
     start_facebook_comment_listener,
     stop_facebook_comment_listener,
 )
@@ -18,6 +19,7 @@ from .mediamtx import MediaMTXError, mediamtx_enabled, provision_live_path, tear
 from .models import Live, PageFacebook
 from .tiktool_live import (
     build_tiktok_diffusion,
+    ensure_tiktool_listener,
     start_tiktool_listener,
     stop_tiktool_listener,
     tiktool_configured,
@@ -87,6 +89,8 @@ def _provision_webrtc(live: Live, facebook_broadcasts: list[dict]) -> dict | Non
 @transaction.atomic
 def demarrer_live(live: Live) -> Live:
     if live.statut == Live.STATUT_EN_COURS and live.diffusion_plateformes:
+        ensure_facebook_comment_listener(live)
+        ensure_tiktool_listener(live)
         return live
 
     _stop_other_active_lives(live.vendeur, exclude_live_id=live.pk)

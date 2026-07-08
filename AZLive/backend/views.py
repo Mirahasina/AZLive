@@ -122,6 +122,17 @@ class CommandeListCreateView(generics.ListCreateAPIView):
 
         if live_id:
             queryset = queryset.filter(live_id=live_id)
+            live = (
+                Live.objects.filter(pk=live_id, statut=Live.STATUT_EN_COURS)
+                .select_related('vendeur')
+                .first()
+            )
+            if live and not live.vendeur.is_demo_mode:
+                from .facebook_live_comments import ensure_facebook_comment_listener
+                from .tiktool_live import ensure_tiktool_listener
+
+                ensure_facebook_comment_listener(live)
+                ensure_tiktool_listener(live)
         if client_id:
             queryset = queryset.filter(client_id=client_id)
         if produit_id:

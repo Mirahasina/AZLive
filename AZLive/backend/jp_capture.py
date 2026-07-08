@@ -3,7 +3,7 @@ from django.db.models import Max
 
 from .ai import HybridCommentAnalyzer
 from .jp_codes import normalize_jp_code
-from .models import Client, Commande, Live, LiveCodeJP, PageFacebook, Produit, Vendeur
+from .models import Client, Commande, Live, LiveCodeJP, PageFacebook, Produit, Variante, Vendeur
 from .order_messaging import send_jp_confirmation_message
 from .serializers import CommandeSerializer
 
@@ -76,11 +76,12 @@ def create_jp_commande(client, produit, live=None, canal='', comment_id=None, va
 def _candidate_code(analysis) -> str:
     """Code JP candidat (nu) déduit du commentaire.
 
-    On privilégie le texte tapé après « JP » (product_query) puis le code détecté.
-    normalize_jp_code retire un éventuel préfixe « JP » résiduel (gère l'ancien
-    « JP JPNOIR » -> « NOIR »).
+    On privilégie ``code_jp`` puis le texte brut du commentaire : le LLM peut
+    remplir ``product_query`` avec le nom produit (ex: "Tee-shirt") au lieu du
+    code ("2"), ce qui casse la résolution par code.
+    normalize_jp_code retire un éventuel préfixe « JP » résiduel.
     """
-    for key in ('product_query', 'code_jp', 'raw_text'):
+    for key in ('code_jp', 'raw_text', 'product_query'):
         candidate = normalize_jp_code(analysis.get(key))
         if candidate:
             return candidate
@@ -102,7 +103,17 @@ def resolve_live_variante(live, analysis, vendeur=None):
     if vendeur:
         queryset = queryset.filter(variante__produit__vendeur=vendeur)
     mapping = queryset.first()
-    return mapping.variante if mapping else None
+    if mapping:
+        return mapping.variante
+
+    dressing_qs = live.produits_dressing.all()
+    if vendeur:
+        dressing_qs = dressing_qs.filter(vendeur=vendeur)
+    return (
+        Variante.objects.filter(produit__in=dressing_qs, code_jp__iexact=code)
+        .select_related('produit')
+        .first()
+    )
 
 
 def resolve_variante_for_analysis(produit, analysis, live=None):
@@ -192,18 +203,20 @@ def find_produit_for_comment(analysis, vendeur=None, live=None):
 
     match = queryset.filter(
         models.Q(nom__icontains=query)
-        | models.Q(couleur__icontains=query)
-        | models.Q(taille__icontains=query)
-    ).first()
+        | models.Q(variantes__couleur__icontains=query)
+        | models.Q(variantes__taille__icontains=query)
+        | models.Q(variantes__code_jp__icontains=query)
+    ).distinct().first()
     if match:
         return match
 
     for token in [token for token in query.split() if len(token) > 1]:
         match = queryset.filter(
             models.Q(nom__icontains=token)
-            | models.Q(couleur__icontains=token)
-            | models.Q(taille__icontains=token)
-        ).first()
+            | models.Q(variantes__couleur__icontains=token)
+            | models.Q(variantes__taille__icontains=token)
+            | models.Q(variantes__code_jp__icontains=token)
+        ).distinct().first()
         if match:
             return match
 

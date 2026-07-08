@@ -296,6 +296,8 @@ class LiveSerializer(serializers.ModelSerializer):
     chiffre_affaires = serializers.SerializerMethodField()
     nb_fiches = serializers.SerializerMethodField()
     operateur_nom = serializers.SerializerMethodField()
+    confirmation_link = serializers.SerializerMethodField()
+    confirmation_comment = serializers.SerializerMethodField()
     produits_dressing = ProduitSerializer(many=True, read_only=True)
     produits_dressing_ids = serializers.PrimaryKeyRelatedField(
         queryset=Produit.objects.all(), source='produits_dressing', many=True, write_only=True, required=False
@@ -307,6 +309,7 @@ class LiveSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'titre', 'date_live', 'statut', 'vendeur', 'operateur',
             'chiffre_affaires', 'nb_fiches', 'operateur_nom',
+            'confirmation_link', 'confirmation_comment',
             'produits_dressing', 'produits_dressing_ids', 'codes_jp', 'pages_facebook',
             'diffusion_plateformes', 'date_debut', 'date_fin',
         ]
@@ -327,6 +330,21 @@ class LiveSerializer(serializers.ModelSerializer):
 
     def get_operateur_nom(self, obj):
         return obj.operateur.nom if obj.operateur else None
+
+    def get_confirmation_link(self, obj):
+        from .order_messaging import public_order_form_url
+
+        tiktok = (obj.diffusion_plateformes or {}).get('tiktok') or {}
+        return tiktok.get('confirmation_link') or public_order_form_url(obj.id)
+
+    def get_confirmation_comment(self, obj):
+        tiktok = (obj.diffusion_plateformes or {}).get('tiktok') or {}
+        stored = tiktok.get('confirmation_comment')
+        if stored:
+            return stored
+        from .tiktool_live import build_tiktok_confirmation_comment
+
+        return build_tiktok_confirmation_comment(obj)
 
 
 class ClientSerializer(serializers.ModelSerializer):

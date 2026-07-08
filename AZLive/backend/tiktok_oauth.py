@@ -147,13 +147,15 @@ def get_or_create_vendeur_from_tiktok(profile: dict[str, Any], token_payload: di
 
     display_name = profile.get('display_name') or 'Vendeur TikTok'
     username = profile.get('username') or ''
-    tiktok_username = f'@{username.lstrip("@")}' if username else display_name
+    tiktok_username = f'@{username.lstrip("@")}' if username else ''
 
     access_token = token_payload.get('access_token', '')
     refresh_token = token_payload.get('refresh_token')
 
     existing = Vendeur.objects.filter(tiktok_open_id=open_id).select_related('user').first()
     if existing:
+        if not tiktok_username:
+            tiktok_username = existing.tiktok_username or ''
         existing.tiktok_access_token = access_token
         existing.tiktok_refresh_token = refresh_token
         existing.tiktok_username = tiktok_username
