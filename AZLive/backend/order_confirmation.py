@@ -187,16 +187,15 @@ def _parse_delivery_time(value: str | None) -> time | None:
         key = 'apresmidi' if key.startswith('apres') else key
         return PERIOD_DEFAULT_TIMES.get(key)
 
-    # « am 9 », « amin'ny 9 » (souvent après « maraina » / « talata »)
     am_hour = AM_HOUR_PATTERN.search(normalized)
     if am_hour:
         hour = int(am_hour.group(1))
-        if morning_hint or hour >= 7:
+        if morning_hint:
             pass
-        elif delivery_hint and 1 <= hour <= 6:
-            hour += 12
         elif 1 <= hour <= 6:
             hour += 12
+        elif hour >= 7:
+            pass
         if 0 <= hour <= 23:
             return time(hour, 0)
 
@@ -424,16 +423,18 @@ def _extract_time_token(text: str) -> tuple[str | None, str]:
     if am_match:
         normalized_work = _normalize_text(work)
         period_match = PERIOD_PATTERN.search(normalized_work)
-        delivery_hint = bool(
-            re.search(r'\b(?:aterina|livraison|delivery|hatraiza)\b', normalized_work)
-        )
+        hour = int(am_match.group(1))
         if period_match:
             period = period_match.group(1)
-        elif delivery_hint:
+        elif re.search(r'\b(?:aterina|livraison|delivery|hatraiza)\b', normalized_work):
             period = 'atoandro'
-        else:
+        elif 1 <= hour <= 6:
+            period = 'atoandro'
+        elif 7 <= hour <= 11:
             period = 'maraina'
-        token = f'{period} am {am_match.group(1)}'
+        else:
+            period = 'atoandro'
+        token = f'{period} am {hour}'
         work = (work[:am_match.start()] + ' ' + work[am_match.end():]).strip()
         return token, work
 
