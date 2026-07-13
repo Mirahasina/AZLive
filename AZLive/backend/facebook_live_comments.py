@@ -45,6 +45,71 @@ def _fetch_live_comments(live_video_id: str, access_token: str) -> list[dict[str
     return []
 
 
+def _fetch_comment_author(comment_id: str, access_token: str) -> dict[str, str]:
+    """Tente de récupérer l'auteur d'un commentaire (souvent masqué dans le listing live)."""
+    try:
+        payload = _graph_request(
+            comment_id,
+            {
+                'access_token': access_token,
+                'fields': 'from{id,name}',
+            },
+            method='GET',
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.info('Impossible de résoudre l\'auteur du commentaire %s: %s', comment_id, exc)
+        return {}
+
+    sender = (payload or {}).get('from') or {}
+    sender_id = str(sender.get('id') or '')
+    if not sender_id:
+        return {}
+    return {
+        'id': sender_id,
+        'name': sender.get('name') or 'Client Facebook',
+    }
+
+
+def resolve_comment_sender(
+    comment: dict[str, Any],
+    *,
+    access_token: str,
+    page_id: str | None = None,
+) -> tuple[str, str, bool]:
+    """Retourne (sender_id, sender_name, author_resolved).
+
+    Si Meta masque `from` (admins, app Dev, privacy), on retombe sur un id stable
+    dérivé du commentaire pour ne pas perdre le JP. La private_reply utilise comment_id.
+    """
+    sender = comment.get('from') or {}
+    sender_id = str(sender.get('id') or '')
+    sender_name = sender.get('name') or 'Client Facebook'
+    if sender_id:
+        return sender_id, sender_name, True
+
+    comment_id = str(comment.get('id') or '')
+    if comment_id and access_token:
+        fetched = _fetch_comment_author(comment_id, access_token)
+        if fetched.get('id'):
+            return fetched['id'], fetched.get('name') or 'Client Facebook', True
+
+    # Fallback : permet aux admins / auteurs masqués de JP quand même.
+    # Préfixe distinct pour ne pas collisionner avec un vrai PSID.
+    if comment_id:
+        fallback_id = f'fb_comment:{comment_id}'
+        fallback_name = 'Client Facebook (auteur masqué)'
+        if page_id:
+            fallback_name = f'Client Facebook (page {page_id})'
+        logger.warning(
+            'Auteur masqué pour commentaire %s — capture JP avec id de repli %s',
+            comment_id,
+            fallback_id,
+        )
+        return fallback_id, fallback_name, False
+
+    return '', 'Client Facebook', False
+
+
 class _FacebookCommentListener(threading.Thread):
     daemon = True
 
@@ -96,12 +161,21 @@ class _FacebookCommentListener(threading.Thread):
                 continue
             self._seen_ids.add(comment_id)
 
-            sender = comment.get('from') or {}
-            sender_id = str(sender.get('id') or '')
-            sender_name = sender.get('name') or 'Client Facebook'
             message = comment.get('message') or ''
-            if not sender_id or not message:
-                # Auteur masqué (confidentialité / hors rôle app) ou commentaire vide.
+            if not message:
+                continue
+
+            sender_id, sender_name, _author_resolved = resolve_comment_sender(
+                comment,
+                access_token=self.access_token,
+                page_id=self.page_id,
+            )
+            if not sender_id:
+                logger.warning(
+                    'Commentaire FB sans id exploitable ignoré (live #%s, commentaire %s)',
+                    self.live_id,
+                    comment_id,
+                )
                 continue
 
             try:

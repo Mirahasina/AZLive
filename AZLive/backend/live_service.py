@@ -12,6 +12,7 @@ from .facebook_live_comments import (
     start_facebook_comment_listener,
     stop_facebook_comment_listener,
 )
+from .facebook_messenger_inbox import start_messenger_inbox_listener
 from .facebook_oauth import FacebookOAuthError, facebook_configured
 from .facebook_webhooks import subscribe_vendeur_pages
 from .mediamtx import MediaMTXError, mediamtx_enabled, provision_live_path, teardown_live_path
@@ -54,6 +55,17 @@ def _ensure_webhooks(vendeur):
         pass
 
 
+def _ensure_messenger_inbox_listeners(pages: list[PageFacebook], *, demo: bool) -> None:
+    """Poller inbox Page : récupère les MP même si le webhook Messenger rate.
+
+    Tourne aussi après la fin du live (confirmations en DM). Aucun clic client.
+    """
+    if demo or not facebook_configured():
+        return
+    for page in pages:
+        start_messenger_inbox_listener(page)
+
+
 def _first_secure_stream_url(facebook_broadcasts: list[dict]) -> str | None:
     for broadcast in facebook_broadcasts:
         if broadcast.get('demo'):
@@ -87,6 +99,12 @@ def _provision_webrtc(live: Live, facebook_broadcasts: list[dict]) -> dict | Non
 @transaction.atomic
 def demarrer_live(live: Live) -> Live:
     if live.statut == Live.STATUT_EN_COURS and live.diffusion_plateformes:
+        # Un rechargement Django tue les threads : on relance le poller commentaires.
+        facebook_broadcasts = list((live.diffusion_plateformes or {}).get('facebook') or [])
+        if facebook_broadcasts and facebook_configured() and not live.vendeur.is_demo_mode:
+            pages = resolve_live_pages(live)
+            start_facebook_comment_listener(live, facebook_broadcasts, pages)
+            _ensure_messenger_inbox_listeners(pages, demo=live.vendeur.is_demo_mode)
         return live
 
     _stop_other_active_lives(live.vendeur, exclude_live_id=live.pk)
@@ -150,6 +168,7 @@ def demarrer_live(live: Live) -> Live:
     # Capture automatique des commentaires JP du Live Facebook (polling API live comments).
     if facebook_broadcasts and facebook_configured() and not live.vendeur.is_demo_mode:
         start_facebook_comment_listener(live, facebook_broadcasts, pages)
+        _ensure_messenger_inbox_listeners(pages, demo=live.vendeur.is_demo_mode)
 
     return live
 

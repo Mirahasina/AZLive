@@ -215,7 +215,6 @@ class HybridCommentAnalyzer:
 
 
 class ConfirmationMessageAnalyzer:
-    """Analyse libre des réponses client — sans format imposé, avec complétion progressive."""
 
     PLACEHOLDER_NAMES = {'Client Live', 'Client Facebook', 'Client TikTok'}
 
@@ -226,13 +225,14 @@ class ConfirmationMessageAnalyzer:
             _looks_like_phone,
             _looks_like_time,
             _normalize_phone,
+            _prepare_confirmation_lines,
             parse_confirmation_text,
         )
 
         parsed = parse_confirmation_text(text)
-        lines = [line.strip() for line in (text or '').splitlines() if line.strip()]
+        lines = _prepare_confirmation_lines(text)
 
-        if client and len(lines) == 1:
+        if client and not parsed and len(lines) == 1:
             parsed = self._infer_single_line(
                 lines[0],
                 client,
@@ -253,6 +253,31 @@ class ConfirmationMessageAnalyzer:
                 _normalize_phone,
                 _is_quantity_line,
             )
+
+        if client and len(lines) == 1:
+            line = lines[0]
+            if (
+                parsed.get('nom') == line
+                and not self._needs_nom(client)
+                and not getattr(client, 'adresse', None)
+                and 'adresse' not in parsed
+                and not _looks_like_phone(line)
+                and not _looks_like_date(line)
+                and not _looks_like_time(line)
+                and not (_is_quantity_line and _is_quantity_line(line))
+            ):
+                parsed = {'adresse': parsed['nom']}
+
+        if (
+            client
+            and parsed.get('nom')
+            and parsed.get('telephone')
+            and not parsed.get('adresse')
+            and not self._needs_nom(client)
+            and parsed.get('nom') != client.nom
+        ):
+            parsed = {**parsed, 'adresse': parsed['nom']}
+            parsed.pop('nom', None)
 
         return {
             'raw_text': text,

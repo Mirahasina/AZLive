@@ -368,45 +368,20 @@ class CommandeSearchAPIView(generics.ListAPIView):
 
 
 class JPRelanceAPIView(APIView):
-    MAX_RELANCES = 3
-    permission_classes = [AllowAny]  # MVP — déclenché par le planificateur Cron sans token
+    permission_classes = [AllowAny]
 
     def post(self, request):
         force = request.data.get('force', False) or request.query_params.get('force', 'false').lower() == 'true'
-        commandes_a_relancer = []
-        
-        for commande in Commande.objects.filter(statut=Commande.STATUT_JP_CAPTURE).prefetch_related('messages', 'client', 'produit'):
-            last_message = commande.messages.order_by('-date_envoi').first()
-            if not last_message:
-                continue
-            if last_message.numero_relance >= self.MAX_RELANCES:
-                continue
+        from .jp_relances import process_jp_relances
 
-            if not force:
-                now = timezone.now()
-                if last_message.date_envoi + timedelta(minutes=30) > now:
-                    continue
-
-            relance_num = last_message.numero_relance + 1
-            contenu = self.build_relance_message(commande, relance_num)
-            
-            Message.objects.create(commande=commande, contenu=contenu, numero_relance=relance_num)
-            MessagingService.send_relance_message(commande.client, commande.produit, relance_num)
-
-            commandes_a_relancer.append({
-                'commande_id': commande.id,
-                'client': commande.client.nom,
-                'produit': commande.produit.nom,
-                'numero_relance': relance_num,
-                'contenu': contenu,
-            })
-
-        return Response({'relances': commandes_a_relancer}, status=status.HTTP_200_OK)
-
-    def build_relance_message(self, commande, numero_relance):
-        return (
-            f"Bonjour {commande.client.nom}, ceci est votre relance n°{numero_relance} "
-            f"pour la commande '{commande.produit.nom}'. Merci de confirmer votre adresse et date de livraison."
+        result = process_jp_relances(force=bool(force))
+        return Response(
+            {
+                'relances': result['relances'],
+                'expirations': result['expirations'],
+                'inbox_synced': result['inbox_synced'],
+            },
+            status=status.HTTP_200_OK,
         )
 
 

@@ -19,7 +19,9 @@ apiAddress: :9997
 # MediaMTX appelle cette URL pour autoriser chaque action (publish/read...).
 # host.docker.internal pointe vers la machine hôte depuis le conteneur.
 authMethod: http
-authHTTPAddress: http://host.docker.internal:8000/api/media/auth/
+# network_mode: host (docker-compose) → Django est sur la même machine : 127.0.0.1
+# (host.docker.internal casse souvent l'auth WHIP sous Linux → HTTP 401)
+authHTTPAddress: http://127.0.0.1:8000/api/media/auth/
 # On n'authentifie pas les appels à l'API de contrôle (réservée au backend en local).
 authHTTPExclude:
   - action: api

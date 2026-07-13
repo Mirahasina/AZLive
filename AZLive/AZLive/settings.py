@@ -65,7 +65,7 @@ INSTALLED_APPS = [
     'django.contrib.staticfiles',
     'rest_framework',
     'rest_framework.authtoken',
-    'backend',
+    'backend.apps.BackendConfig',
 ]
 
 MIDDLEWARE = [
@@ -228,6 +228,16 @@ AZLIVE_LLM_TIMEOUT = int(os.environ.get('AZLIVE_LLM_TIMEOUT', '12'))
 AZLIVE_JP_RELANCE_DELAY_MINUTES = int(os.environ.get('AZLIVE_JP_RELANCE_DELAY_MINUTES', '30'))
 # Nombre maximum de relances avant expiration.
 AZLIVE_JP_MAX_RELANCES = int(os.environ.get('AZLIVE_JP_MAX_RELANCES', '3'))
+# Thread daemon au boot Django (plus besoin de cron). false = désactiver.
+AZLIVE_JP_RELANCE_AUTO = os.environ.get('AZLIVE_JP_RELANCE_AUTO', 'true').lower() in (
+    '1', 'true', 'yes', 'on',
+)
+# Fréquence de passage du planificateur (secondes). Le délai réel reste DELAY_MINUTES.
+AZLIVE_JP_RELANCE_POLL_SECONDS = int(os.environ.get('AZLIVE_JP_RELANCE_POLL_SECONDS', '60'))
+
+# Reprise après annulation : réutiliser les infos de la dernière commande annulée
+# seulement si elle date de moins de N heures (évite des données vieilles de semaines/mois).
+AZLIVE_REPRISE_INFO_MAX_HOURS = int(os.environ.get('AZLIVE_REPRISE_INFO_MAX_HOURS', '72'))
 
 # MediaMTX — pont WebRTC (navigateur) -> RTMPS (Facebook Live).
 # Si MEDIAMTX_ENABLED est faux, le démarrage de live garde l'ancien comportement

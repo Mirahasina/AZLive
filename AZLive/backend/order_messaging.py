@@ -31,20 +31,52 @@ def _detect_channel(commande: Commande) -> str:
     return Message.CANAL_MOCK
 
 
-def _record_outbound(commande: Commande, content: str, canal: str) -> Message:
+def _record_outbound(commande: Commande, content: str, canal: str, *, numero_relance: int = 0) -> Message:
     return Message.objects.create(
         commande=commande,
         contenu=content,
-        numero_relance=0,
+        numero_relance=numero_relance,
         direction=Message.DIRECTION_OUTBOUND,
         canal=canal,
     )
+
+
+def _claim_messenger_psid(commande: Commande, delivery: dict[str, Any]) -> None:
+    """Après private_reply, Meta renvoie souvent le PSID : on l'enregistre côté client.
+
+    Plus besoin que le client clique un lien : les prochains MP partent directement
+    via Send API, et la synchro inbox peut rattacher ses réponses.
+    """
+    psid = str(delivery.get('recipient_id') or '').strip()
+    if not psid.isdigit():
+        return
+
+    from .models import Client
+
+    client = commande.client
+    current = str(client.facebook_id or '')
+    if current == psid:
+        return
+    if current.isdigit() and current != psid:
+        return
+    if Client.objects.filter(facebook_id=psid).exclude(pk=client.pk).exists():
+        logger.warning(
+            'PSID %s déjà lié à un autre client — commande #%s non mise à jour',
+            psid,
+            commande.id,
+        )
+        return
+    client.facebook_id = psid
+    client.save(update_fields=['facebook_id'])
+    logger.info('PSID Messenger %s rattaché au client #%s (commande #%s)', psid, client.id, commande.id)
 
 
 def _deliver_private_message(
     commande: Commande,
     content: str,
     comment_id: str | None = None,
+    *,
+    numero_relance: int = 0,
 ) -> dict[str, Any]:
     canal = _detect_channel(commande)
     delivery = {'channel': canal, 'sent': False, 'mock': True}
@@ -58,6 +90,7 @@ def _deliver_private_message(
                 # Réponse privée à un commentateur (live/post) : seul canal possible
                 # car l'id du commentaire n'est pas un PSID Messenger.
                 result = send_facebook_private_reply(page, comment_id, content)
+                _claim_messenger_psid(commande, result)
             else:
                 result = send_facebook_private_message(
                     page,
@@ -65,7 +98,9 @@ def _deliver_private_message(
                     content,
                 )
             delivery.update(result)
-            delivery['mock'] = False
+            delivery['mock'] = bool(result.get('mock', False))
+            if not result.get('sent'):
+                delivery['mock'] = True
 
     elif canal == Message.CANAL_TIKTOK:
         # TikTok DM officiel indisponible — journaliser pour envoi manuel / WhatsApp futur
@@ -85,7 +120,7 @@ def _deliver_private_message(
         print(f'\n [ORDER MESSAGING] Message privé ({canal}) commande #{commande.id}:')
         print(f'   > {content}\n')
 
-    _record_outbound(commande, content, canal)
+    _record_outbound(commande, content, canal, numero_relance=numero_relance)
     return delivery
 
 
@@ -158,20 +193,22 @@ FIELD_COMPLETION_PROMPTS = {
 
 
 def build_completion_request_message(commande: Commande, missing_fields: list[str]) -> str:
-    client = commande.client
+    from .order_confirmation import _collected_fields_snapshot
+
+    snapshot = _collected_fields_snapshot(commande)
     received = []
-    if client.nom and client.nom not in {'Client Live', 'Client Facebook', 'Client TikTok'}:
-        received.append(f"anarana ({client.nom})")
-    if client.telephone:
-        received.append(f"numéro ({client.telephone})")
-    if client.adresse:
-        received.append(f"adresse ({client.adresse})")
-    if client.date_livraison_preferee:
-        received.append(f"daty ({client.date_livraison_preferee.strftime('%d/%m/%Y')})")
-    if client.heure_livraison_preferee:
-        received.append(f"ora ({client.heure_livraison_preferee.strftime('%H:%M')})")
-    if commande.quantite:
-        received.append(f"firy ({commande.quantite})")
+    if snapshot.get('nom'):
+        received.append(f"anarana ({snapshot['nom']})")
+    if snapshot.get('telephone'):
+        received.append(f"numéro ({snapshot['telephone']})")
+    if snapshot.get('adresse'):
+        received.append(f"adresse ({snapshot['adresse']})")
+    if snapshot.get('date_livraison'):
+        received.append(f"daty ({snapshot['date_livraison']})")
+    if snapshot.get('heure_livraison'):
+        received.append(f"ora ({snapshot['heure_livraison']})")
+    if snapshot.get('quantite'):
+        received.append(f"firy ({snapshot['quantite']})")
 
     missing_labels = [FIELD_COMPLETION_PROMPTS[field] for field in missing_fields if field in FIELD_COMPLETION_PROMPTS]
     intro = f'{thanks()}!'
@@ -228,6 +265,39 @@ def build_waiting_with_info_message(commande: Commande) -> str:
 
 def send_waiting_with_info_message(commande: Commande) -> dict[str, Any]:
     content = build_waiting_with_info_message(commande)
+    delivery = _deliver_private_message(commande, content)
+    return {'content': content, 'delivery': delivery}
+
+
+def build_stock_partial_offer_message(commande: Commande, available: int) -> str:
+    """Propose de prendre le stock restant ou d'attendre un réassort."""
+    client = commande.client
+    produit = commande.produit
+    requested = commande.quantite_effective
+    intro = pick(
+        [
+            f"{greeting(client.nom)}! Voaray ny infos-nao ho an'ny '{produit.nom}'.",
+            f"{thanks()} {first_name(client.nom) or client.nom}! Azonay ny commande-nao '{produit.nom}'.",
+        ]
+    )
+    situation = (
+        f"Saingy {requested} no nangatahinao fa {available} ihany no sisa amin'izao."
+    )
+    choix = pick(
+        [
+            f"Tianao alaina ve ny {available} sisa, sa te-hiandry ianao raha vao misy indray?",
+            f"Afaka maka ny {available} sisa ianao izao, na miandry ny stock vaovao. Inona no tianao?",
+        ]
+    )
+    aide = (
+        f"Valio fotsiny : « ekena {available} » / « oui » raha alainao, "
+        f"na « miandry » raha te-hiandry."
+    )
+    return f'{intro} {situation} {choix}\n\n{aide}{emoji(prob=0.3)}'
+
+
+def send_stock_partial_offer_message(commande: Commande, available: int) -> dict[str, Any]:
+    content = build_stock_partial_offer_message(commande, available)
     delivery = _deliver_private_message(commande, content)
     return {'content': content, 'delivery': delivery}
 
@@ -323,8 +393,8 @@ def build_order_cancelled_message(commande: Commande) -> str:
     )
     cloture = pick(
         [
-            "Raha nisy diso na te-hanao commande vaovao ianao, valio fotsiny eto. Misaotra!",
-            "Raha mbola mila zavatra ianao, soraty eto fotsiny dia eto izahay. Misaotra e!",
+            "Raha nisy diso na te-hanao commande vaovao ianao, valio « mbola te-hividy » eto. Misaotra!",
+            "Raha mbola te-hividy ianao, soraty « reprendre » na « mbola te-hividy » eto. Misaotra e!",
         ]
     )
     return f'{intro} {cloture}'
@@ -332,6 +402,95 @@ def build_order_cancelled_message(commande: Commande) -> str:
 
 def send_order_cancelled_message(commande: Commande) -> dict[str, Any]:
     content = build_order_cancelled_message(commande)
+    delivery = _deliver_private_message(commande, content)
+    return {'content': content, 'delivery': delivery}
+
+
+def build_reprise_message(commande: Commande, *, ancienne_id: int, outcome: str) -> str:
+    """Explique qu'on crée une nouvelle commande (sans reprendre la place des autres)."""
+    client = commande.client
+    produit = commande.produit
+    intro = pick(
+        [
+            f"{greeting(client.nom)}! Azonay fa te-hanao indray ny '{produit.nom}'.",
+            f"{thanks()} {first_name(client.nom) or 'tompoko'}! Te-hiverina amin'ny commande ianao.",
+        ]
+    )
+    regle = (
+        f"Ny commande #{ancienne_id} efa foana. Tsy azonay alaina indray ny toerana "
+        f"nomena ny manaraka — ka manomboka commande vaovao #{commande.id} ianao."
+    )
+    if outcome == 'confirme':
+        suite = pick(
+            [
+                "Mbola misy stock, ka confirmé avy hatrany ny commande vaovao.",
+                "Soa ihany fa mbola misy, dia vita ny commande vaovao.",
+            ]
+        )
+    elif outcome == 'attente':
+        suite = (
+            f"Saingy efa nomena ny manaraka ny stock, ka ao amin'ny liste d'attente "
+            f"ianao (numéro {commande.ordre_jp})."
+        )
+    elif outcome == 'stock_partiel':
+        suite = "Mbola misy sisa kely — jereo ny safidy manaraka (alaina ny sisa sa miandry)."
+    elif outcome == 'recap':
+        suite = "Jereo ny infos teo ambany ; raha mety, valio « eka » / « ok », na « hanova … » raha mila ovaina."
+    else:
+        suite = "Mba fenoy / hamafiso ny infos raha mbola ilaina."
+    return f'{intro} {regle} {suite}{emoji(prob=0.35)}'
+
+
+def send_reprise_message(
+    commande: Commande,
+    *,
+    ancienne_id: int,
+    outcome: str,
+) -> dict[str, Any]:
+    content = build_reprise_message(commande, ancienne_id=ancienne_id, outcome=outcome)
+    delivery = _deliver_private_message(commande, content)
+    return {'content': content, 'delivery': delivery}
+
+
+def build_reprise_recap_message(commande: Commande) -> str:
+    """Récapitule les infos connues et demande une confirmation explicite."""
+    from .order_confirmation import _collected_fields_snapshot
+
+    snapshot = _collected_fields_snapshot(commande)
+    client = commande.client
+    produit = commande.produit
+    intro = pick(
+        [
+            f"{greeting(client.nom)}! Ireto ny infos efa fantatra ho an'ny '{produit.nom}' :",
+            f"{thanks()} {first_name(client.nom) or 'tompoko'}! Voaray ireto ny infos-nao :",
+        ]
+    )
+    lignes = []
+    if snapshot.get('nom'):
+        lignes.append(f"• Anarana : {snapshot['nom']}")
+    if snapshot.get('telephone'):
+        lignes.append(f"• Numéro : {snapshot['telephone']}")
+    if snapshot.get('adresse'):
+        lignes.append(f"• Adresse : {snapshot['adresse']}")
+    if snapshot.get('date_livraison'):
+        lignes.append(f"• Daty : {snapshot['date_livraison']}")
+    if snapshot.get('heure_livraison'):
+        lignes.append(f"• Ora : {snapshot['heure_livraison']}")
+    if snapshot.get('quantite'):
+        lignes.append(f"• Isa : {snapshot['quantite']}")
+    recap = '\n'.join(lignes) if lignes else "• (tsy ampy ny infos)"
+    suite = pick(
+        [
+            "Raha mety izany, valio fotsiny « eka » na « ok ». "
+            "Raha te-hanova : « hanova adresse … » na « ovaina ny numéro … » ohatra.",
+            "Mety ve ireo? Valio « eka » raha ekena, na « hanova … » raha mila ovaina.",
+        ]
+    )
+    return f'{intro}\n\n{recap}\n\n{suite}{emoji(prob=0.35)}'
+
+
+def send_reprise_recap_message(commande: Commande) -> dict[str, Any]:
+    content = build_reprise_recap_message(commande)
     delivery = _deliver_private_message(commande, content)
     return {'content': content, 'delivery': delivery}
 
@@ -378,7 +537,7 @@ def build_vendor_confirmation_notification(commande: Commande) -> str:
     qty = commande.quantite_effective
 
     lines = [
-        f"✅ Commande #{commande.id} — {client.nom}",
+        f" Commande #{commande.id} — {client.nom}",
         f"   Produit : {produit.nom}{variante_label} × {qty}",
         f"   Montant : {prix_total:,.0f} Ar",
         f"   Tél : {client.telephone or '—'}",
@@ -446,6 +605,160 @@ def build_human_assistance_client_message(client) -> str:
         ]
     )
     return f'{intro} {suite}{emoji(prob=0.35)}'
+
+
+def build_thanks_ack_message(commande: Commande | None = None, client=None) -> str:
+    """Répond chaleureusement à un remerciement (Misaotra, Mankasitraka…)."""
+    person = client or (commande.client if commande else None)
+    prenom = first_name(person.nom) if person else ''
+    who = prenom or 'tompoko'
+    intro = pick(
+        [
+            f'Tsy misy fisaorana {who}!',
+            f'Misaotra indrindra koa {who}!',
+            f'Tsy maninona {who}, izahay no misaotra!',
+            f'Mankasitraka {who}!',
+        ]
+    )
+    if commande and commande.statut == Commande.STATUT_ANNULE:
+        suite = pick(
+            [
+                'Efa voafoana ny commande. Raha mbola te-hividy ianao, soraty « mbola te-hividy ».',
+                'Voaray ny fisaorana. Ny commande efa foana — eto foana izahay raha mila zavatra.',
+            ]
+        )
+        return f'{intro} {suite}{emoji(prob=0.4)}'
+    if commande and commande.statut == Commande.STATUT_CONFIRME:
+        suite = pick(
+            [
+                'Efa confirmé ny commande-nao, miandry ny livraison fotsiny.',
+                'Vonona ny livraison-nao izahay. Misaotra tamin\'ny fahatokisana!',
+                'Haterinay ny entana araka ny daty voalaza. Misaotra e!',
+            ]
+        )
+        return f'{intro} {suite}{emoji(prob=0.45)}'
+    suite = pick(
+        [
+            'Eto foana izahay raha mbola misy ilaina.',
+            'Azonao tohizana ny infos raha mbola tsy vita.',
+            'Vonona hanampy anao foana izahay.',
+        ]
+    )
+    return f'{intro} {suite}{emoji(prob=0.4)}'
+
+
+def send_thanks_ack_message(commande: Commande | None = None, client=None) -> dict[str, Any]:
+    target = commande
+    if target is None and client is not None:
+        # Dernière commande (y compris annulée) pour coller au contexte du fil.
+        target = (
+            Commande.objects.filter(client=client)
+            .order_by('-date_creation')
+            .first()
+        )
+    if target is None:
+        content = build_thanks_ack_message(client=client)
+        return {'content': content, 'delivery': {'sent': False, 'mock': True}}
+    content = build_thanks_ack_message(commande=target, client=client or target.client)
+    delivery = _deliver_private_message(target, content)
+    return {'content': content, 'delivery': delivery}
+
+
+def build_modification_ack_message(
+    commande: Commande,
+    changed_fields: list[str],
+    *,
+    prompt_details: bool = False,
+) -> str:
+    client = commande.client
+    if prompt_details:
+        return (
+            f"{greeting(client.nom)}! Azonao ovaina ny infos. "
+            f"Ohatra : « hanova adresse Ivato », « ovaina ny numéro 034… », "
+            f"« hanova daty zoma maraina », « hanova firy 2 ».{emoji(prob=0.3)}"
+        )
+    labels = ', '.join(changed_fields) if changed_fields else 'ny infos'
+    intro = pick(
+        [
+            f"{thanks()} {first_name(client.nom) or 'tompoko'}! Voaova ny {labels}.",
+            f"Ekena {first_name(client.nom) or 'tompoko'}! Nosoloina ny {labels}.",
+            f"{greeting(client.nom)}! Vita ny fanovana ({labels}).",
+        ]
+    )
+    suite = pick(
+        [
+            f"Commande #{commande.id} nohavaozina. Misaotra!",
+            f"Voarakitra ny fanovana ho an'ny commande #{commande.id}.",
+        ]
+    )
+    return f'{intro} {suite}{emoji(prob=0.35)}'
+
+
+def send_modification_ack_message(
+    commande: Commande,
+    changed_fields: list[str],
+    *,
+    prompt_details: bool = False,
+) -> dict[str, Any]:
+    content = build_modification_ack_message(
+        commande,
+        changed_fields,
+        prompt_details=prompt_details,
+    )
+    delivery = _deliver_private_message(commande, content)
+    return {'content': content, 'delivery': delivery}
+
+
+def build_modification_revert_message(commande: Commande, *, reprise: bool = False) -> str:
+    client = commande.client
+    intro = pick(
+        [
+            f"{thanks()} {first_name(client.nom) or 'tompoko'}! Voafafana ny fanovana vao hatao.",
+            f"{greeting(client.nom)}! Tafaverina ny infos teo alohan'ny fanovana.",
+        ]
+    )
+    if reprise:
+        suite = "Jereo indray ny récap ci-dessous ; valio « eka » raha mety, na « hanova … » raha mila ovaina."
+    else:
+        suite = pick(
+            [
+                f"Ny commande #{commande.id} dia mbola velona.",
+                "Tsy voafafa ny commande — ny fanovana ihany no foanana.",
+            ]
+        )
+    return f'{intro} {suite}{emoji(prob=0.35)}'
+
+
+def build_modification_revert_unavailable_message(commande: Commande) -> str:
+    client = commande.client
+    return (
+        f"{greeting(client.nom)}! Tsy misy fanovana vao hatao ho foanana. "
+        f"Raha te-hanova, soraty « hanova … ». "
+        f"Raha te-hanafoana ny commande manontolo, soraty « foano » na « annuler ».{emoji(prob=0.3)}"
+    )
+
+
+def send_modification_revert_message(commande: Commande, *, reprise: bool = False) -> dict[str, Any]:
+    content = build_modification_revert_message(commande, reprise=reprise)
+    delivery = _deliver_private_message(commande, content)
+    return {'content': content, 'delivery': delivery}
+
+
+def send_modification_revert_unavailable_message(commande: Commande) -> dict[str, Any]:
+    content = build_modification_revert_unavailable_message(commande)
+    delivery = _deliver_private_message(commande, content)
+    return {'content': content, 'delivery': delivery}
+
+
+def send_relance_message(
+    commande: Commande,
+    content: str,
+    *,
+    numero_relance: int = 1,
+) -> dict[str, Any]:
+    """Relance réelle via Messenger (plus le mock MessagingService)."""
+    delivery = _deliver_private_message(commande, content, numero_relance=numero_relance)
+    return {'content': content, 'delivery': delivery}
 
 
 # ---------------------------------------------------------------------------
