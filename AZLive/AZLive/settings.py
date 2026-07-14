@@ -270,8 +270,25 @@ TIKTOK_LOGIN_SUCCESS_URL = os.environ.get(
 )
 TIKTOK_OAUTH_SCOPES = os.environ.get('TIKTOK_OAUTH_SCOPES', 'user.info.basic')
 
+# OAuth client public — réutilise TIKTOK_REDIRECT_URI (un seul callback à enregistrer chez TikTok)
+TIKTOK_PUBLIC_REDIRECT_URI = os.environ.get(
+    'TIKTOK_PUBLIC_REDIRECT_URI',
+    TIKTOK_REDIRECT_URI,
+)
+TIKTOK_PUBLIC_OAUTH_SCOPES = os.environ.get(
+    'TIKTOK_PUBLIC_OAUTH_SCOPES',
+    'user.info.basic,user.info.profile',
+)
+# URL du frontend où rediriger le client après connexion TikTok
+AZLIVE_PUBLIC_ORDER_BASE_URL = os.environ.get(
+    'AZLIVE_PUBLIC_ORDER_BASE_URL',
+    'http://localhost:3000',
+)
+
 # TikTools — commentaires live TikTok en temps réel
 TIKTOOL_API_KEY = os.environ.get('TIKTOOL_API_KEY', '')
+# Cookies session TikTok du compte streamer (sessionid + tt-target-idc) pour répondre dans le chat live
+TIKTOK_SESSION_COOKIES = os.environ.get('TIKTOK_SESSION_COOKIES', '')
 
 _extra_hosts = os.environ.get('DJANGO_EXTRA_ALLOWED_HOSTS', '')
 if _extra_hosts:

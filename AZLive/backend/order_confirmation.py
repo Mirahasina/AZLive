@@ -846,6 +846,54 @@ def find_cancellable_commande(client: Client, vendeur: Vendeur | None = None) ->
     return queryset.first()
 
 
+def _stock_remaining_for(commande: Commande) -> int | None:
+    """Stock encore disponible pour cette commande (après file JP devant elle).
+
+    None = pas de variante / stock non applicable (éligible par défaut).
+    La file « devant » est limitée au même live quand possible.
+    """
+    variante = commande._get_stock_variante()
+    if not variante:
+        return None
+
+    ahead = Commande.objects.filter(
+        produit=commande.produit,
+        variante=commande.variante,
+        statut=Commande.STATUT_JP_CAPTURE,
+        ordre_jp__lt=commande.ordre_jp,
+    ).exclude(pk=commande.pk)
+    if commande.live_id:
+        ahead = ahead.filter(live_id=commande.live_id)
+
+    qty_ahead = sum(c.quantite_effective for c in ahead)
+    return max(variante.stock - qty_ahead, 0)
+
+
+def cancel_commande_public(commande: Commande) -> dict[str, Any]:
+    """Annule une commande depuis le formulaire public (JP / confirmée / préparée)."""
+    if commande.statut not in CANCELLABLE_STATUSES:
+        raise OrderConfirmationError(
+            f'La commande #{commande.id} ne peut plus être annulée '
+            f'(statut : {commande.get_statut_display()}).',
+            status_code=409,
+        )
+
+    commande.statut = Commande.STATUT_ANNULE
+    commande.save(update_fields=['statut'])
+
+    from .order_messaging import send_order_cancelled_message
+
+    outbound = send_order_cancelled_message(commande)
+    return {
+        'status': 'Commande annulée',
+        'annule': True,
+        'commande_id': commande.id,
+        'commande': CommandeSerializer(commande).data,
+        'message_annulation': outbound.get('content'),
+        'message_delivery': outbound.get('delivery'),
+    }
+
+
 def resolve_page_for_commande(commande: Commande) -> PageFacebook | None:
     vendeur = commande.produit.vendeur
     if commande.live_id and commande.live.pages_facebook:
