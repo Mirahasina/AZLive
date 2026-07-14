@@ -413,29 +413,51 @@ def _is_quantity_line(line: str) -> bool:
     )
 
 
+def _stock_remaining_for(commande: Commande) -> int | None:
+    """Stock encore disponible pour cette commande (après file JP devant elle).
+
+    None = pas de variante / stock non applicable (éligible par défaut).
+
+    La file « devant » est limitée au même live : les JP non confirmés d'un live
+    précédent ne doivent pas bloquer la confirmation sur le live actuel.
+    Le stock physique (variante.stock) reste global (déjà réduit par les confirmées).
+    """
+    variante = commande._get_stock_variante()
+    if not variante:
+        return None
+
+    ahead = Commande.objects.filter(
+        produit=commande.produit,
+        variante=commande.variante,
+        statut=Commande.STATUT_JP_CAPTURE,
+        ordre_jp__lt=commande.ordre_jp,
+    ).exclude(pk=commande.pk)
+    if commande.live_id:
+        ahead = ahead.filter(live_id=commande.live_id)
+
+    qty_ahead = sum(c.quantite_effective for c in ahead)
+    return max(variante.stock - qty_ahead, 0)
+
+
 def _order_is_eligible(commande: Commande) -> bool:
     """Vrai si la commande peut être confirmée maintenant (assez de stock, à son tour).
 
     Le stock courant de la variante reflète déjà les commandes confirmées (décrémentées).
     On ne compte donc que les JP encore en attente PLACÉS DEVANT (ordre_jp plus petit) :
-    s'ils consomment déjà tout le stock, ce client reste en liste d'attente.
+    s'ils consomment déjà tout le stock, ce client n'est pas confirmé.
     """
-    variante = commande._get_stock_variante()
-    if not variante:
+    remaining = _stock_remaining_for(commande)
+    if remaining is None:
         return True
+    return commande.quantite_effective <= remaining
 
-    remaining = variante.stock
-    ahead = (
-        Commande.objects.filter(
-            produit=commande.produit,
-            variante=commande.variante,
-            statut=Commande.STATUT_JP_CAPTURE,
-            ordre_jp__lt=commande.ordre_jp,
-        )
-        .exclude(pk=commande.pk)
+
+def _rupture_stock_message(commande: Commande) -> str:
+    produit_nom = commande.produit.nom if commande.produit_id else 'ce produit'
+    return (
+        f"Produit en rupture de stock : « {produit_nom} ». "
+        "La commande n'a pas pu être confirmée."
     )
-    qty_ahead = sum(c.quantite_effective for c in ahead)
-    return qty_ahead + commande.quantite_effective <= remaining
 
 
 def _ensure_paiement(commande: Commande) -> Paiement:
@@ -592,9 +614,8 @@ def handle_client_reply(
             'message_delivery': outbound.get('delivery'),
         }
 
-    # Infos complètes, mais le client peut être en liste d'attente (stock insuffisant
-    # pour lui pour l'instant) : on garde sa commande en attente, sans prendre de stock.
-    # Il sera confirmé automatiquement quand ce sera son tour (voir promote_queue).
+    # Infos complètes mais pas encore de stock pour ce client : liste d'attente.
+    # (Les captures vont jusqu'à 3×stock ; seule la confirmation consomme le stock réel.)
     if not _order_is_eligible(commande):
         from .order_messaging import send_waiting_with_info_message
 
@@ -603,6 +624,7 @@ def handle_client_reply(
             'status': "En liste d'attente — informations enregistrées",
             'complet': False,
             'en_attente': True,
+            'rupture_stock': False,
             'champs_manquants': [],
             'commande': CommandeSerializer(commande).data,
             'client': _client_snapshot(client),
@@ -612,6 +634,31 @@ def handle_client_reply(
         }
 
     return _finalize_confirmation(commande, parsed_data=parsed_data)
+
+
+def cancel_commande_public(commande: Commande) -> dict[str, Any]:
+    """Annule une commande depuis le formulaire public (JP / confirmée / préparée)."""
+    if commande.statut not in CANCELLABLE_STATUSES:
+        raise OrderConfirmationError(
+            f'La commande #{commande.id} ne peut plus être annulée '
+            f'(statut : {commande.get_statut_display()}).',
+            status_code=409,
+        )
+
+    commande.statut = Commande.STATUT_ANNULE
+    commande.save(update_fields=['statut'])
+
+    from .order_messaging import send_order_cancelled_message
+
+    outbound = send_order_cancelled_message(commande)
+    return {
+        'status': 'Commande annulée',
+        'annule': True,
+        'commande_id': commande.id,
+        'commande': CommandeSerializer(commande).data,
+        'message_annulation': outbound.get('content'),
+        'message_delivery': outbound.get('delivery'),
+    }
 
 
 def _finalize_confirmation(
@@ -625,8 +672,19 @@ def _finalize_confirmation(
     promoted=True quand la confirmation vient d'une montée en file (une place s'est libérée
     et les informations du client étaient déjà complètes) : le message le signale.
     """
-    commande.statut = Commande.STATUT_CONFIRME
-    commande.save(update_fields=['statut'])
+    # Garde-fou stock : jamais confirmer si le stock est épuisé.
+    if not _order_is_eligible(commande):
+        raise OrderConfirmationError(
+            _rupture_stock_message(commande),
+            status_code=409,
+            payload={'rupture_stock': True},
+        )
+
+    try:
+        commande.statut = Commande.STATUT_CONFIRME
+        commande.save(update_fields=['statut'])
+    except ValueError as exc:
+        raise OrderConfirmationError(str(exc), status_code=409, payload={'rupture_stock': True}) from exc
     paiement = _ensure_paiement(commande)
 
     from .order_messaging import send_order_confirmed_message

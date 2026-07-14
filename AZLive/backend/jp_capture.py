@@ -8,12 +8,47 @@ from .order_messaging import send_jp_confirmation_message
 from .serializers import CommandeSerializer
 
 
+# File d'attente JP : on capture jusqu'à 3 × stock (ex. stock 3 → 9 commandes max).
+JP_CAPTURE_QUEUE_MULTIPLIER = 3
+
+
 class JPCaptureError(Exception):
     def __init__(self, message, status_code=400, payload=None):
         super().__init__(message)
         self.message = message
         self.status_code = status_code
         self.payload = payload or {}
+
+
+def _active_jp_demand_queryset(produit, variante=None, live=None):
+    """Commandes encore actives pour la file (JP + confirmées + préparées).
+
+    Si ``live`` est fourni, on ne compte que les commandes de CE live — les JP
+    non confirmés d'un live précédent ne doivent pas bloquer la file du live actuel.
+    """
+    qs = Commande.objects.filter(
+        produit=produit,
+        variante=variante,
+        statut__in=(
+            Commande.STATUT_JP_CAPTURE,
+            Commande.STATUT_CONFIRME,
+            Commande.STATUT_PREPARE,
+        ),
+    )
+    if live is not None:
+        qs = qs.filter(live=live)
+    return qs
+
+
+def max_jp_captures_allowed(produit, variante=None) -> int:
+    """Plafond de capture = 3 × stock de la variante (0 si stock épuisé / absent)."""
+    stock = 0
+    if variante is not None:
+        stock = max(int(variante.stock or 0), 0)
+    else:
+        first = produit.variantes.order_by('id').first()
+        stock = max(int(first.stock or 0), 0) if first else 0
+    return JP_CAPTURE_QUEUE_MULTIPLIER * stock
 
 
 def create_jp_commande(client, produit, live=None, canal='', comment_id=None, variante=None):
@@ -23,6 +58,9 @@ def create_jp_commande(client, produit, live=None, canal='', comment_id=None, va
     la collecte des informations (nom, finday, adiresy, daty, ora, isa). La commande est
     donc créée avec quantite = None (non encore renseignée).
 
+    Plafond de capture : 3 × stock de la variante. Au-delà, la commande n'est pas créée
+    (file pleine / stock insuffisant pour accepter de nouveaux JP).
+
     Le contenu (instructions si éligible, liste d'attente sinon) est construit et livré par
     send_jp_confirmation_message, qui enregistre aussi le message sortant. Pour un
     commentateur Facebook, comment_id permet la réponse privée (private_replies).
@@ -30,13 +68,13 @@ def create_jp_commande(client, produit, live=None, canal='', comment_id=None, va
     confirmation porte sur la bonne déclinaison. L'envoi (appel réseau) est fait hors
     transaction pour ne pas garder le verrou.
 
-    Si le client a déjà une commande JP en attente pour la même déclinaison (même produit
-    et même variante), on réutilise cette commande au lieu d'en créer un doublon — le
-    client n'envoie pas plusieurs JP, c'est une re-publication accidentelle.
+    Si le client a déjà une commande JP en attente pour la même déclinaison SUR LE MÊME
+    LIVE, on réutilise cette commande (re-publication accidentelle). Un JP du même
+    client sur un autre live crée bien une nouvelle commande.
     """
     reused = False
     with transaction.atomic():
-        existing = (
+        existing_qs = (
             Commande.objects.select_for_update()
             .filter(
                 client=client,
@@ -45,12 +83,45 @@ def create_jp_commande(client, produit, live=None, canal='', comment_id=None, va
                 statut=Commande.STATUT_JP_CAPTURE,
             )
             .order_by('ordre_jp')
-            .first()
         )
+        # Important : ne pas réutiliser un JP d'un live précédent.
+        if live is not None:
+            existing_qs = existing_qs.filter(live=live)
+        else:
+            existing_qs = existing_qs.filter(live__isnull=True)
+
+        existing = existing_qs.first()
         if existing:
             commande = existing
             reused = True
         else:
+            # Verrouille la file produit/variante (du live) pour respecter le plafond 3×stock.
+            demand_qs = _active_jp_demand_queryset(produit, variante, live=live).select_for_update()
+            active_count = demand_qs.count()
+            max_allowed = max_jp_captures_allowed(produit, variante)
+            if max_allowed <= 0 or active_count >= max_allowed:
+                produit_nom = produit.nom if produit else 'ce produit'
+                if variante is not None:
+                    stock = int(variante.stock or 0)
+                else:
+                    first_var = produit.variantes.order_by('id').first()
+                    stock = int(first_var.stock or 0) if first_var else 0
+                raise JPCaptureError(
+                    (
+                        f"Produit en rupture de stock / file complète : « {produit_nom} ». "
+                        f"Stock={stock}, plafond de capture={max_allowed} "
+                        f"({JP_CAPTURE_QUEUE_MULTIPLIER}×stock), déjà {active_count} commande(s)."
+                    ),
+                    status_code=409,
+                    payload={
+                        'rupture_stock': True,
+                        'stock': stock,
+                        'max_captures': max_allowed,
+                        'active_count': active_count,
+                        'multiplier': JP_CAPTURE_QUEUE_MULTIPLIER,
+                    },
+                )
+
             # L'ordre suit le scope de la file d'attente / de l'éligibilité : (produit, variante).
             max_order = (
                 Commande.objects.select_for_update()

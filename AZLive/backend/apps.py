@@ -17,22 +17,40 @@ class BackendConfig(AppConfig):
 
         def _recover_listeners_once():
             from .facebook_live_comments import recover_facebook_comment_listeners
-            from .tiktool_live import recover_tiktool_listeners
+            from .tiktool_live import recover_tiktool_listeners, sync_external_tiktok_lives
+            import logging
 
-            recover_facebook_comment_listeners()
-            recover_tiktool_listeners()
+            logger = logging.getLogger(__name__)
+
+            # Sync TikTok et recovery des listeners sont indépendants :
+            # une erreur réseau TikTools ne doit pas empêcher de relancer les WS.
+            try:
+                sync_external_tiktok_lives()
+            except Exception:
+                logger.exception('Watchdog: échec sync_external_tiktok_lives')
+
+            try:
+                recover_facebook_comment_listeners()
+            except Exception:
+                logger.exception('Watchdog: échec recover_facebook_comment_listeners')
+
+            try:
+                n = recover_tiktool_listeners()
+                if n:
+                    logger.info('Watchdog: %s listener(s) TikTok actifs/relancés', n)
+            except Exception:
+                logger.exception('Watchdog: échec recover_tiktool_listeners')
 
         def _watchdog():
-            interval = float(os.environ.get('AZLIVE_LISTENER_WATCHDOG_SECONDS', '15'))
-            # Démarrage initial court puis boucle de réconciliation :
-            # utile quand un live passe en_cours via une autre commande/process.
-            time.sleep(1.0)
+            # Background seulement : detection REST espacée pour éviter les 429 TikTools.
+            interval = float(os.environ.get('AZLIVE_LISTENER_WATCHDOG_SECONDS', '45'))
+            time.sleep(2.0)
             while True:
                 try:
                     _recover_listeners_once()
                 except Exception:
-                    # Évite que le watchdog s'arrête sur une erreur transitoire DB/réseau.
-                    pass
-                time.sleep(max(interval, 5.0))
+                    import logging
+                    logging.getLogger(__name__).exception('Watchdog listener: erreur inattendue')
+                time.sleep(max(interval, 30.0))
 
         threading.Thread(target=_watchdog, name='azlive-listener-watchdog', daemon=True).start()

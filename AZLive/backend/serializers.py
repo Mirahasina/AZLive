@@ -228,16 +228,29 @@ class ProduitSerializer(serializers.ModelSerializer):
 
     def _sync_variantes(self, produit, variantes_data):
         existing_ids = []
-        for variante_data in variantes_data:
+        for raw in variantes_data:
+            variante_data = dict(raw)
             variante_id = variante_data.pop('id', None)
+            variante = None
             if variante_id:
                 variante = Variante.objects.filter(pk=variante_id, produit=produit).first()
-                if variante:
-                    for attr, value in variante_data.items():
-                        setattr(variante, attr, value)
-                    variante.save()
-                    existing_ids.append(variante.id)
-                    continue
+            # Sans id (ou id invalide) : réutiliser la variante même taille/couleur
+            # pour éviter IntegrityError unique(produit, taille, couleur) au recreate.
+            if variante is None:
+                taille = variante_data.get('taille')
+                couleur = variante_data.get('couleur')
+                if taille is not None and couleur is not None:
+                    variante = Variante.objects.filter(
+                        produit=produit,
+                        taille=taille,
+                        couleur=couleur,
+                    ).first()
+            if variante:
+                for attr, value in variante_data.items():
+                    setattr(variante, attr, value)
+                variante.save()
+                existing_ids.append(variante.id)
+                continue
             variante = Variante.objects.create(produit=produit, **variante_data)
             existing_ids.append(variante.id)
 
@@ -345,6 +358,30 @@ class LiveSerializer(serializers.ModelSerializer):
         from .tiktool_live import build_tiktok_confirmation_comment
 
         return build_tiktok_confirmation_comment(obj)
+
+    def validate_produits_dressing_ids(self, produits):
+        """Refuse d'AJOUTER au dressing un produit dont le stock restant < 1.
+
+        Les produits déjà présents (stock tombé à 0 pendant le live) peuvent rester.
+        """
+        existing_ids = set()
+        if self.instance is not None:
+            existing_ids = set(self.instance.produits_dressing.values_list('id', flat=True))
+
+        out_of_stock = []
+        for produit in produits:
+            if produit.id in existing_ids:
+                continue
+            stock = sum(int(v.stock or 0) for v in produit.variantes.all())
+            if stock < 1:
+                out_of_stock.append(produit.nom)
+
+        if out_of_stock:
+            names = ', '.join(out_of_stock)
+            raise serializers.ValidationError(
+                f"Stock restant insuffisant (minimum 1) pour : {names}."
+            )
+        return produits
 
 
 class ClientSerializer(serializers.ModelSerializer):

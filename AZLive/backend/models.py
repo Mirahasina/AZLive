@@ -253,38 +253,87 @@ class Commande(models.Model):
         promote_queue(self.produit, variante=self.variante, exclude_pk=self.pk)
 
     def save(self, *args, **kwargs):
+        from django.db import transaction
+
         is_new = self.pk is None
         old_status = None
+        old_quantite = None
         if not is_new:
             try:
-                old_status = Commande.objects.get(pk=self.pk).statut
+                previous = Commande.objects.get(pk=self.pk)
+                old_status = previous.statut
+                old_quantite = previous.quantite
             except Commande.DoesNotExist:
                 pass
 
-        super().save(*args, **kwargs)
+        transitioning_to_confirme = (is_new and self.statut == self.STATUT_CONFIRME) or (
+            old_status != self.STATUT_CONFIRME and self.statut == self.STATUT_CONFIRME
+        )
+        transitioning_to_annule = (
+            old_status == self.STATUT_CONFIRME and self.statut == self.STATUT_ANNULE
+        )
+        quantite_changed_while_confirmed = (
+            not is_new
+            and self.statut == self.STATUT_CONFIRME
+            and old_status == self.STATUT_CONFIRME
+            and old_quantite != self.quantite
+        )
 
-        # Decrement stock if transitioning to Confirmed
-        if (is_new and self.statut == self.STATUT_CONFIRME) or (old_status != self.STATUT_CONFIRME and self.statut == self.STATUT_CONFIRME):
-            self._adjust_variante_stock(-self.quantite_effective)
+        with transaction.atomic():
+            super().save(*args, **kwargs)
 
-        # Increment stock if transitioning from Confirmed to Cancelled
-        elif old_status == self.STATUT_CONFIRME and self.statut == self.STATUT_ANNULE:
-            self._adjust_variante_stock(self.quantite_effective)
+            # Decrement stock if transitioning to Confirmed
+            if transitioning_to_confirme:
+                ok = self._adjust_variante_stock(-self.quantite_effective)
+                if not ok:
+                    raise ValueError(
+                        f"Stock insuffisant pour confirmer la commande #{self.pk} "
+                        f"(quantité {self.quantite_effective})."
+                    )
 
-        # Queue Promotion Logic!
+            # Increment stock if transitioning from Confirmed to Cancelled
+            elif transitioning_to_annule:
+                self._adjust_variante_stock(self.quantite_effective)
+
+            # Si la quantité change alors que la commande est déjà confirmée,
+            # ajuster le stock de la différence (ex. 1 → 3 = -2 supplémentaires).
+            elif quantite_changed_while_confirmed:
+                old_eff = old_quantite or 1
+                new_eff = self.quantite_effective
+                delta = old_eff - new_eff  # positif = on rend du stock
+                if delta != 0:
+                    ok = self._adjust_variante_stock(delta)
+                    if not ok:
+                        raise ValueError(
+                            f"Stock insuffisant pour ajuster la quantité de la commande #{self.pk}."
+                        )
+
+        # Queue Promotion Logic! (hors du bloc stock pour éviter les conflits de verrou)
         if not is_new and old_status != self.STATUT_ANNULE and self.statut == self.STATUT_ANNULE:
             self._promote_next_in_queue()
 
     def _get_stock_variante(self):
         if self.variante_id:
-            return self.variante
+            # Toujours relire depuis la DB pour éviter un stock stale en mémoire.
+            return Variante.objects.filter(pk=self.variante_id).first()
         return self.produit.variantes.order_by('id').first()
 
-    def _adjust_variante_stock(self, delta):
+    def _adjust_variante_stock(self, delta) -> bool:
+        """Ajuste le stock de façon atomique. Retourne False si décrément impossible."""
+        from django.db.models import F
+
         variante = self._get_stock_variante()
-        if variante and variante.stock + delta >= 0:
-            variante.stock += delta
-            variante.save(update_fields=['stock'])
+        if not variante:
+            return False
+
+        if delta < 0:
+            updated = Variante.objects.filter(pk=variante.pk, stock__gte=-delta).update(
+                stock=F('stock') + delta
+            )
+            return updated > 0
+
+        Variante.objects.filter(pk=variante.pk).update(stock=F('stock') + delta)
+        return True
 
     def get_prix_unitaire(self):
         if self.variante_id:

@@ -34,7 +34,7 @@ from .serializers import (
 from .services import MessagingService, AZExpressService
 from .facebook_oauth import FacebookOAuthError, facebook_configured, sync_vendeur_pages
 from .jp_codes import code_for_commande, format_jp_code, normalize_jp_code
-from .jp_capture import create_jp_commande
+from .jp_capture import JPCaptureError, create_jp_commande
 from .live_service import arreter_live, demarrer_live
 from .documents import build_etiquette_livraison_pdf, build_facture_pdf, pdf_response
 from .order_confirmation import (
@@ -180,44 +180,29 @@ class JPCaptureAPIView(APIView):
             },
         )
 
-        max_order = Commande.objects.filter(produit=produit).aggregate(max_ordre=Max('ordre_jp'))['max_ordre'] or 0
-        ordre_jp = max_order + 1
-        commande = Commande.objects.create(
-            client=client,
-            produit=produit,
-            variante=variante,
-            ordre_jp=ordre_jp,
-        )
-
-        if ordre_jp == 1:
-            message_content = self.build_auto_message(client, produit)
-        else:
-            intro = pick([
-                f"{greeting(client.nom)} 😊 Voaray ny JP-nao ho an'ny '{produit.nom}'.",
-                f"{greeting(client.nom)}! Efa azonay ny JP-nao ho an'ny '{produit.nom}'.",
-            ])
-            message_content = (
-                f"{intro} Fa efa misy nanao commande mialoha, ka ao amin'ny liste d'attente "
-                f"ianao izao (numéro {ordre_jp}). Hilazanay anao raha vao misy toerana.{emoji(prob=0.4)}"
+        try:
+            commande = create_jp_commande(
+                client,
+                produit,
+                variante=variante,
+            )
+        except JPCaptureError as exc:
+            return Response(
+                {'detail': exc.message, **(exc.payload or {})},
+                status=exc.status_code,
             )
 
-        message = Message.objects.create(
-            commande=commande,
-            contenu=message_content,
-            numero_relance=0,
+        message = (
+            Message.objects.filter(commande=commande, direction=Message.DIRECTION_OUTBOUND)
+            .order_by('-id')
+            .first()
         )
-
-        if ordre_jp == 1:
-            MessagingService.send_automatic_message(client, produit, commande.id)
-        else:
-            MessagingService.send_waiting_list_message(client, produit, ordre_jp, commande.id)
-
         serializer = CommandeSerializer(commande)
         return Response(
             {
                 'commande': serializer.data,
                 'produit_reconnu': produit.nom,
-                'message_envoye': message.contenu,
+                'message_envoye': message.contenu if message else '',
                 'ai_analysis': parsed,
             },
             status=status.HTTP_201_CREATED,

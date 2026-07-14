@@ -24,7 +24,12 @@ from rest_framework.views import APIView
 
 from .jp_capture import normalize_tiktok_username
 from .models import Client, Commande, Live, LiveCodeJP
-from .order_confirmation import OrderConfirmationError, confirm_commande_from_message
+from .order_confirmation import (
+    OrderConfirmationError,
+    cancel_commande_public,
+    confirm_commande_from_message,
+    _stock_remaining_for,
+)
 from .tiktok_oauth import (
     TikTokOAuthError,
     authenticate_public_client_with_code,
@@ -69,6 +74,8 @@ def _serialize_commandes(live: Live, commandes) -> list[dict]:
     for commande in commandes:
         variante = commande.variante
         code = code_map.get(commande.variante_id) or (variante.code_jp if variante else '')
+        remaining = _stock_remaining_for(commande)
+        stock_actuel = variante.stock if variante else None
         items.append(
             {
                 'commande_id': commande.id,
@@ -78,6 +85,10 @@ def _serialize_commandes(live: Live, commandes) -> list[dict]:
                 'couleur': variante.couleur if variante else '',
                 'prix_unitaire': str(variante.prix_unitaire) if variante else None,
                 'quantite': commande.quantite,
+                'stock_disponible': remaining,
+                'stock_actuel': stock_actuel,
+                'en_rupture': remaining is not None and remaining <= 0,
+                'en_liste_attente': remaining is not None and remaining <= 0,
             }
         )
     return items
@@ -179,6 +190,11 @@ class PublicOrderFormAPIView(APIView):
             commande.quantite = quantite
             commande.save(update_fields=['quantite'])
 
+            # Recharge la variante pour voir le stock à jour (après une confirmation précédente
+            # dans la même requête multi-commandes).
+            if commande.variante_id:
+                commande.variante.refresh_from_db()
+
             try:
                 outcome = confirm_commande_from_message(
                     commande,
@@ -186,9 +202,33 @@ class PublicOrderFormAPIView(APIView):
                     inbound_text='Informations transmises via le formulaire de commande (TikTok).',
                     canal='TikTok',
                 )
-                results.append({'commande_id': commande_id, 'status': outcome.get('status'), 'complet': outcome.get('complet')})
+                # Liste d'attente = infos OK, pas encore de stock → succès partiel, pas une erreur.
+                results.append(
+                    {
+                        'commande_id': commande_id,
+                        'status': outcome.get('status'),
+                        'complet': bool(outcome.get('complet')),
+                        'en_attente': bool(outcome.get('en_attente')),
+                    }
+                )
             except OrderConfirmationError as exc:
-                errors.append({'commande_id': commande_id, 'detail': exc.message})
+                detail = exc.message
+                payload = getattr(exc, 'payload', None) or {}
+                errors.append(
+                    {
+                        'commande_id': commande_id,
+                        'detail': detail,
+                        'rupture_stock': bool(payload.get('rupture_stock')),
+                    }
+                )
+            except ValueError as exc:
+                errors.append(
+                    {
+                        'commande_id': commande_id,
+                        'detail': str(exc),
+                        'rupture_stock': True,
+                    }
+                )
 
         return Response(
             {
@@ -197,6 +237,94 @@ class PublicOrderFormAPIView(APIView):
                 'erreurs': errors,
             },
             status=status.HTTP_200_OK if results else status.HTTP_400_BAD_REQUEST,
+        )
+
+
+class PublicOrderCancelAPIView(APIView):
+    """Annule une ou plusieurs commandes JP depuis le formulaire public."""
+
+    permission_classes = [AllowAny]
+
+    def post(self, request, live_id: int):
+        live = get_object_or_404(Live, pk=live_id)
+        data = request.data or {}
+        handle = (data.get('handle') or '').strip()
+        clients = _match_clients(handle)
+        if not handle or not clients.exists():
+            return Response(
+                {'detail': 'Aucune commande trouvée pour ce compte TikTok.'},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        raw_ids = data.get('commande_ids') or data.get('items') or []
+        if not isinstance(raw_ids, list) or not raw_ids:
+            # Sans liste : annule toutes les commandes JP en attente du client pour ce live.
+            pending = list(_pending_commandes(live, clients))
+            commande_ids = [c.id for c in pending]
+        else:
+            commande_ids = []
+            for item in raw_ids:
+                try:
+                    if isinstance(item, dict):
+                        commande_ids.append(int(item.get('commande_id')))
+                    else:
+                        commande_ids.append(int(item))
+                except (TypeError, ValueError):
+                    continue
+
+        if not commande_ids:
+            return Response(
+                {'detail': 'Aucune commande à annuler.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Anti-falsification : uniquement les commandes du client sur ce live,
+        # encore annulables (jp_capture / confirme / prepare).
+        allowed = {
+            c.id: c
+            for c in Commande.objects.select_related('produit', 'variante', 'client').filter(
+                live=live,
+                client__in=clients,
+                id__in=commande_ids,
+                statut__in=(
+                    Commande.STATUT_JP_CAPTURE,
+                    Commande.STATUT_CONFIRME,
+                    Commande.STATUT_PREPARE,
+                ),
+            )
+        }
+
+        annulees = []
+        errors = []
+        for commande_id in commande_ids:
+            commande = allowed.get(commande_id)
+            if commande is None:
+                errors.append(
+                    {
+                        'commande_id': commande_id,
+                        'detail': 'Commande introuvable ou non annulable pour ce compte/live.',
+                    }
+                )
+                continue
+            try:
+                outcome = cancel_commande_public(commande)
+                annulees.append(
+                    {
+                        'commande_id': commande_id,
+                        'status': outcome.get('status'),
+                        'annule': True,
+                    }
+                )
+            except OrderConfirmationError as exc:
+                errors.append({'commande_id': commande_id, 'detail': exc.message})
+
+        return Response(
+            {
+                'status': 'Annulation traitée.',
+                'annulees': annulees,
+                'erreurs': errors,
+            },
+            status=status.HTTP_200_OK if annulees else status.HTTP_400_BAD_REQUEST,
         )
 
 
