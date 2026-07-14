@@ -71,6 +71,39 @@ def _claim_messenger_psid(commande: Commande, delivery: dict[str, Any]) -> None:
     logger.info('PSID Messenger %s rattaché au client #%s (commande #%s)', psid, client.id, commande.id)
 
 
+def _sync_client_messenger_id(client, delivery: dict[str, Any]) -> None:
+    """Enregistre le PSID Messenger renvoyé par l'API après une private_reply."""
+    if not delivery.get('sent'):
+        return
+    recipient_id = delivery.get('recipient_id')
+    if not recipient_id:
+        return
+    psid = str(recipient_id)
+    if client.facebook_id != psid:
+        logger.info(
+            'Client #%s : facebook_id mis à jour %s -> %s (PSID Messenger)',
+            client.pk,
+            client.facebook_id,
+            psid,
+        )
+        client.facebook_id = psid
+        client.save(update_fields=['facebook_id'])
+
+
+def _log_delivery_failure(commande: Commande | None, delivery: dict[str, Any], *, context: str) -> None:
+    if delivery.get('sent'):
+        return
+    if delivery.get('mock'):
+        return
+    target = f'commande #{commande.id}' if commande else 'client'
+    logger.warning(
+        'Envoi Messenger échoué (%s, %s): %s',
+        context,
+        target,
+        delivery.get('error') or delivery.get('detail') or 'erreur inconnue',
+    )
+
+
 def _deliver_private_message(
     commande: Commande,
     content: str,
@@ -101,6 +134,7 @@ def _deliver_private_message(
             delivery['mock'] = bool(result.get('mock', False))
             if not result.get('sent'):
                 delivery['mock'] = True
+            _log_delivery_failure(commande, delivery, context='jp_capture')
 
     elif canal == Message.CANAL_TIKTOK:
         # TikTok DM officiel indisponible — journaliser pour envoi manuel / WhatsApp futur
@@ -1018,6 +1052,9 @@ def deliver_message_to_client(
                 result = send_facebook_private_message(page, client.facebook_id, content)
             delivery.update(result)
             delivery['mock'] = False
+            _sync_client_messenger_id(client, delivery)
+            _log_delivery_failure(None, delivery, context='client_message')
+
     elif canal == Message.CANAL_TIKTOK:
         logger.info(
             '[TIKTOK DM PENDING] client #%s → @%s: %s',

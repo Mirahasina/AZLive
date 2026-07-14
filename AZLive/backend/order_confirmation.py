@@ -1,14 +1,17 @@
 import json
+import logging
 import re
 import unicodedata
 from datetime import date, datetime, time, timedelta
 from typing import Any
 
-from django.db import transaction
+from django.db import models, transaction
 from django.utils import timezone
 
-from .models import Client, Commande, Message, Paiement, PageFacebook, Vendeur
+from .models import Client, Commande, Live, Message, Paiement, PageFacebook, Vendeur
 from .serializers import CommandeSerializer
+
+logger = logging.getLogger(__name__)
 
 
 class OrderConfirmationError(Exception):
@@ -756,14 +759,29 @@ def detect_client_channel(client: Client) -> str:
     return 'Inconnu'
 
 
-def find_pending_commande(client: Client, vendeur: Vendeur | None = None) -> Commande | None:
+def find_pending_commande(
+    client: Client,
+    vendeur: Vendeur | None = None,
+    *,
+    prefer_active_live: bool = True,
+) -> Commande | None:
     queryset = (
         Commande.objects.select_related('produit', 'produit__vendeur', 'client', 'variante', 'live')
         .filter(client=client, statut=Commande.STATUT_JP_CAPTURE)
-        .order_by('ordre_jp', '-date_creation')
     )
     if vendeur:
         queryset = queryset.filter(produit__vendeur=vendeur)
+    if prefer_active_live:
+        queryset = queryset.order_by(
+            models.Case(
+                models.When(live__statut=Live.STATUT_EN_COURS, then=0),
+                default=1,
+            ),
+            'ordre_jp',
+            '-date_creation',
+        )
+    else:
+        queryset = queryset.order_by('ordre_jp', '-date_creation')
     return queryset.first()
 
 
@@ -857,6 +875,71 @@ def resolve_page_for_commande(commande: Commande) -> PageFacebook | None:
         .order_by('id')
         .first()
     )
+
+
+def link_messenger_sender_to_client(sender_id: str, vendeur: Vendeur | None) -> Client | None:
+    """Rattache un PSID Messenger au client qui répond après capture JP.
+
+    L'id « from » d'un commentaire live diffère du PSID Messenger : le webhook
+    ``messages`` envoie le PSID. On relie d'abord la commande JP récente sans
+    réponse inbound sur un live en cours (celui qui vient de recevoir le message
+    de confirmation), sinon une commande JP unique en cours.
+    """
+    if not vendeur:
+        return None
+
+    psid = str(sender_id)
+    pending = (
+        Commande.objects.select_related('client', 'live')
+        .filter(
+            statut=Commande.STATUT_JP_CAPTURE,
+            produit__vendeur=vendeur,
+        )
+        .order_by(
+            models.Case(
+                models.When(live__statut=Live.STATUT_EN_COURS, then=0),
+                default=1,
+            ),
+            '-date_creation',
+        )
+    )
+
+    for cmd in pending[:25]:
+        has_inbound = Message.objects.filter(
+            commande=cmd,
+            direction=Message.DIRECTION_INBOUND,
+        ).exists()
+        if has_inbound:
+            continue
+        client = cmd.client
+        if client.facebook_id == psid:
+            return client
+        old_id = client.facebook_id
+        client.facebook_id = psid
+        client.save(update_fields=['facebook_id'])
+        logger.info(
+            'Client #%s : PSID Messenger relié %s -> %s (commande #%s sans réponse)',
+            client.pk,
+            old_id,
+            psid,
+            cmd.pk,
+        )
+        return client
+
+    if pending.count() == 1:
+        client = pending.first().client
+        if client.facebook_id != psid:
+            logger.info(
+                'Client #%s : PSID Messenger relié %s -> %s (commande JP unique en cours)',
+                client.pk,
+                client.facebook_id,
+                psid,
+            )
+            client.facebook_id = psid
+            client.save(update_fields=['facebook_id'])
+        return client
+
+    return None
 
 
 CANCELLATION_PATTERNS = [
@@ -2226,6 +2309,14 @@ def process_inbound_private_message(
     # JP capturé avec auteur Meta masqué (souvent admin) : rattache le PSID Messenger.
     if client is None and id_field == 'facebook_id':
         client = claim_masked_facebook_client(real_facebook_id=str(sender_id), vendeur=vendeur)
+    if client is None and channel == 'Facebook':
+        client = link_messenger_sender_to_client(sender_id, vendeur)
+        if client:
+            logger.info(
+                'Webhook Messenger : client #%s relié au PSID %s',
+                client.pk,
+                sender_id,
+            )
 
     from .human_assistance import (
         _looks_like_order_info,
@@ -2443,6 +2534,16 @@ def process_inbound_private_message(
         )
 
     parsed = analyze_confirmation_message(message_text, client=client)
+
+    # Infos de livraison : priorité absolue sur human_assistance (régression post-pull).
+    if commande and (parsed or _looks_like_order_info(message_text, parsed)):
+        return handle_client_reply(
+            commande,
+            parsed,
+            inbound_text=message_text,
+            canal=channel,
+        )
+
     if not _looks_like_order_info(message_text, parsed) and (
         is_off_topic_private_message(message_text, parsed) or needs_human_assistance(analysis)
     ):

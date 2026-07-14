@@ -1,6 +1,8 @@
 # Configuration MediaMTX pour AZLive — pont WebRTC (navigateur) -> RTMPS (Facebook Live)
 #
-# Le navigateur du vendeur publie sa webcam en WebRTC (WHIP) vers MediaMTX.
+# ⚠️ UNIQUEMENT POUR DOCKER (conteneur Linux).
+# Sur Windows NATIF, utilisez mediamtx.windows.yml ou start-mediamtx-windows.bat
+# (host.docker.internal n'existe pas hors Docker -> auth WHIP echoue).
 # Django provisionne dynamiquement un "path" par live (via l'API de contrôle) ;
 # ce path lance ffmpeg (runOnReady) qui relaie le flux vers secure_stream_url de Facebook.
 # L'authentification de chaque publication est déléguée à Django (authHTTPAddress).

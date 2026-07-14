@@ -208,6 +208,10 @@ FACEBOOK_WEBHOOK_FIELDS = os.environ.get(
     'FACEBOOK_WEBHOOK_FIELDS',
     'feed,messages',
 )
+# Timeout / retries des appels Graph API (commentaires live, OAuth, etc.).
+# Augmenter FACEBOOK_GRAPH_TIMEOUT si le réseau est lent (SSL handshake timeout).
+FACEBOOK_GRAPH_TIMEOUT = int(os.environ.get('FACEBOOK_GRAPH_TIMEOUT', '45'))
+FACEBOOK_GRAPH_RETRIES = int(os.environ.get('FACEBOOK_GRAPH_RETRIES', '3'))
 
 # URL publique de l'API (liens facture / étiquette dans les messages privés)
 AZLIVE_PUBLIC_BASE_URL = os.environ.get('AZLIVE_PUBLIC_BASE_URL', 'http://localhost:8000')
