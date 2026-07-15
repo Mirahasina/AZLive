@@ -1,7 +1,12 @@
+import logging
 import os
 import sys
+import threading
+import time
 
 from django.apps import AppConfig
+
+logger = logging.getLogger(__name__)
 
 
 class BackendConfig(AppConfig):
@@ -9,19 +14,51 @@ class BackendConfig(AppConfig):
     name = 'backend'
 
     def ready(self):
-        # Sous runserver + autoreload : ne démarrer que dans le process enfant.
+        # Évite le double démarrage du parent runserver (autoreloader).
         if 'runserver' in sys.argv and os.environ.get('RUN_MAIN') != 'true':
             return
-        # Pendant les tests : pas de thread background (évite du bruit / races).
-        if 'test' in sys.argv:
+        if any(cmd in sys.argv for cmd in ('test', 'migrate', 'makemigrations', 'collectstatic', 'shell')):
             return
+
         try:
             from backend.jp_relances import start_jp_relance_scheduler
 
             start_jp_relance_scheduler()
         except Exception:  # noqa: BLE001
-            import logging
+            logger.exception('Impossible de démarrer le planificateur de relances JP')
 
-            logging.getLogger(__name__).exception(
-                'Impossible de démarrer le planificateur de relances JP'
-            )
+        def _recover_listeners_once():
+            from .facebook_live_comments import recover_facebook_comment_listeners
+            from .tiktool_live import recover_tiktool_listeners, sync_external_tiktok_lives
+
+            # Sync TikTok et recovery des listeners sont indépendants :
+            # une erreur réseau TikTools ne doit pas empêcher de relancer les WS.
+            try:
+                sync_external_tiktok_lives()
+            except Exception:
+                logger.exception('Watchdog: échec sync_external_tiktok_lives')
+
+            try:
+                recover_facebook_comment_listeners()
+            except Exception:
+                logger.exception('Watchdog: échec recover_facebook_comment_listeners')
+
+            try:
+                n = recover_tiktool_listeners()
+                if n:
+                    logger.info('Watchdog: %s listener(s) TikTok actifs/relancés', n)
+            except Exception:
+                logger.exception('Watchdog: échec recover_tiktool_listeners')
+
+        def _watchdog():
+            # Background seulement : detection REST espacée pour éviter les 429 TikTools.
+            interval = float(os.environ.get('AZLIVE_LISTENER_WATCHDOG_SECONDS', '45'))
+            time.sleep(2.0)
+            while True:
+                try:
+                    _recover_listeners_once()
+                except Exception:
+                    logger.exception('Watchdog listener: erreur inattendue')
+                time.sleep(max(interval, 30.0))
+
+        threading.Thread(target=_watchdog, name='azlive-listener-watchdog', daemon=True).start()

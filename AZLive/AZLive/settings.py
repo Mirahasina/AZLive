@@ -208,6 +208,10 @@ FACEBOOK_WEBHOOK_FIELDS = os.environ.get(
     'FACEBOOK_WEBHOOK_FIELDS',
     'feed,messages',
 )
+# Timeout / retries des appels Graph API (commentaires live, OAuth, etc.).
+# Augmenter FACEBOOK_GRAPH_TIMEOUT si le réseau est lent (SSL handshake timeout).
+FACEBOOK_GRAPH_TIMEOUT = int(os.environ.get('FACEBOOK_GRAPH_TIMEOUT', '45'))
+FACEBOOK_GRAPH_RETRIES = int(os.environ.get('FACEBOOK_GRAPH_RETRIES', '3'))
 
 # URL publique de l'API (liens facture / étiquette dans les messages privés)
 AZLIVE_PUBLIC_BASE_URL = os.environ.get('AZLIVE_PUBLIC_BASE_URL', 'http://localhost:8000')
@@ -266,8 +270,25 @@ TIKTOK_LOGIN_SUCCESS_URL = os.environ.get(
 )
 TIKTOK_OAUTH_SCOPES = os.environ.get('TIKTOK_OAUTH_SCOPES', 'user.info.basic')
 
+# OAuth client public — réutilise TIKTOK_REDIRECT_URI (un seul callback à enregistrer chez TikTok)
+TIKTOK_PUBLIC_REDIRECT_URI = os.environ.get(
+    'TIKTOK_PUBLIC_REDIRECT_URI',
+    TIKTOK_REDIRECT_URI,
+)
+TIKTOK_PUBLIC_OAUTH_SCOPES = os.environ.get(
+    'TIKTOK_PUBLIC_OAUTH_SCOPES',
+    'user.info.basic,user.info.profile',
+)
+# URL du frontend où rediriger le client après connexion TikTok
+AZLIVE_PUBLIC_ORDER_BASE_URL = os.environ.get(
+    'AZLIVE_PUBLIC_ORDER_BASE_URL',
+    'http://localhost:3000',
+)
+
 # TikTools — commentaires live TikTok en temps réel
 TIKTOOL_API_KEY = os.environ.get('TIKTOOL_API_KEY', '')
+# Cookies session TikTok du compte streamer (sessionid + tt-target-idc) pour répondre dans le chat live
+TIKTOK_SESSION_COOKIES = os.environ.get('TIKTOK_SESSION_COOKIES', '')
 
 _extra_hosts = os.environ.get('DJANGO_EXTRA_ALLOWED_HOSTS', '')
 if _extra_hosts:

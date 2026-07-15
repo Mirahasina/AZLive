@@ -14,6 +14,7 @@ from .facebook_oauth import issue_auth_token
 from .models import Vendeur
 
 STATE_SIGNER = Signer(salt='azlive-tiktok-oauth-state')
+PUBLIC_STATE_SIGNER = Signer(salt='azlive-tiktok-public-order')
 TIKTOK_AUTH_URL = 'https://www.tiktok.com/v2/auth/authorize/'
 TIKTOK_TOKEN_URL = 'https://open.tiktokapis.com/v2/oauth/token/'
 TIKTOK_USER_INFO_URL = 'https://open.tiktokapis.com/v2/user/info/'
@@ -103,7 +104,11 @@ def build_oauth_url(state: str, code_challenge: str) -> str:
     return f'{TIKTOK_AUTH_URL}?{urllib.parse.urlencode(params)}'
 
 
-def exchange_code_for_tokens(code: str, code_verifier: str) -> dict[str, Any]:
+def exchange_code_for_tokens(
+    code: str,
+    code_verifier: str,
+    redirect_uri: str | None = None,
+) -> dict[str, Any]:
     payload = _tiktok_request(
         TIKTOK_TOKEN_URL,
         {
@@ -111,7 +116,7 @@ def exchange_code_for_tokens(code: str, code_verifier: str) -> dict[str, Any]:
             'client_secret': settings.TIKTOK_CLIENT_SECRET,
             'code': code,
             'grant_type': 'authorization_code',
-            'redirect_uri': settings.TIKTOK_REDIRECT_URI,
+            'redirect_uri': redirect_uri or settings.TIKTOK_REDIRECT_URI,
             'code_verifier': code_verifier,
         },
         method='POST',
@@ -214,3 +219,90 @@ def authenticate_with_access_token(access_token: str) -> tuple[Vendeur, User, bo
     vendeur, user, created = get_or_create_vendeur_from_tiktok(profile, token_payload)
     auth_token = issue_auth_token(user)
     return vendeur, user, created, auth_token
+
+
+# --- OAuth client public (formulaire de commande live TikTok) ---
+
+
+def generate_public_oauth_state(live_id: int) -> tuple[str, str]:
+    verifier = _generate_code_verifier()
+    challenge = _generate_code_challenge(verifier)
+    nonce = secrets.token_urlsafe(16)
+    state = PUBLIC_STATE_SIGNER.sign(f'{live_id}|{nonce}|{verifier}')
+    return state, challenge
+
+
+def validate_public_oauth_state(state: str) -> tuple[int, str]:
+    if not state:
+        raise TikTokOAuthError('Le paramètre state est requis.')
+    try:
+        unsigned = PUBLIC_STATE_SIGNER.unsign(state)
+    except BadSignature as exc:
+        raise TikTokOAuthError('State OAuth invalide ou expiré.') from exc
+    parts = unsigned.split('|', 2)
+    if len(parts) != 3:
+        raise TikTokOAuthError('State OAuth invalide ou expiré.')
+    live_id_str, _, verifier = parts
+    if not verifier:
+        raise TikTokOAuthError('State OAuth invalide ou expiré.')
+    try:
+        live_id = int(live_id_str)
+    except ValueError as exc:
+        raise TikTokOAuthError('State OAuth invalide ou expiré.') from exc
+    return live_id, verifier
+
+
+def build_public_oauth_url(state: str, code_challenge: str) -> str:
+    # Même redirect_uri que la connexion vendeur (déjà enregistrée dans le portail TikTok).
+    redirect_uri = settings.TIKTOK_REDIRECT_URI
+    scopes = settings.TIKTOK_PUBLIC_OAUTH_SCOPES
+    params = {
+        'client_key': settings.TIKTOK_CLIENT_KEY,
+        'response_type': 'code',
+        'scope': scopes,
+        'redirect_uri': redirect_uri,
+        'state': state,
+        'code_challenge': code_challenge,
+        'code_challenge_method': 'S256',
+    }
+    return f'{TIKTOK_AUTH_URL}?{urllib.parse.urlencode(params)}'
+
+
+def get_public_user_profile(access_token: str) -> dict[str, Any]:
+    """Profil TikTok pour un client (formulaire public) — inclut username si scope accordé."""
+    payload = _tiktok_request(
+        TIKTOK_USER_INFO_URL,
+        {'fields': 'open_id,union_id,avatar_url,display_name,username'},
+        bearer_token=access_token,
+    )
+    error = payload.get('error') or {}
+    if error.get('code') not in (None, '', 'ok'):
+        raise TikTokOAuthError(error.get('message') or 'Profil TikTok inaccessible.')
+    user = (payload.get('data') or {}).get('user') or {}
+    if not user.get('open_id'):
+        raise TikTokOAuthError('Profil TikTok invalide.')
+    return user
+
+
+def resolve_public_client_handle(profile: dict[str, Any]) -> str:
+    """Identifiant utilisable pour retrouver les commandes capturées (uniqueId / @)."""
+    from .jp_capture import normalize_tiktok_username
+
+    username = profile.get('username') or ''
+    if username:
+        return normalize_tiktok_username(username)
+    open_id = profile.get('open_id') or ''
+    if open_id:
+        return str(open_id)
+    raise TikTokOAuthError('Impossible d\'identifier votre compte TikTok.')
+
+
+def authenticate_public_client_with_code(code: str, state: str) -> tuple[int, str]:
+    """Échange le code OAuth et renvoie (live_id, handle) sans créer de compte vendeur."""
+    live_id, code_verifier = validate_public_oauth_state(state)
+    token_payload = exchange_code_for_tokens(
+        code, code_verifier, redirect_uri=settings.TIKTOK_REDIRECT_URI
+    )
+    profile = get_public_user_profile(token_payload['access_token'])
+    handle = resolve_public_client_handle(profile)
+    return live_id, handle
