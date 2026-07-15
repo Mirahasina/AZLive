@@ -4,7 +4,7 @@ from typing import Any
 from django.conf import settings
 
 from .facebook_messenger import send_facebook_private_message, send_facebook_private_reply
-from .message_humanizer import emoji, first_name, greeting, pick, thanks
+from .message_humanizer import emoji, first_name, greeting, pick, thanks, thanks_with_name
 from .models import Commande, Message
 
 logger = logging.getLogger(__name__)
@@ -240,10 +240,9 @@ def build_waiting_with_info_message(commande: Commande) -> str:
     client = commande.client
     produit = commande.produit
     fn = first_name(client.nom)
-    nom_court = f' {fn}' if fn else ''
     intro = pick(
         [
-            f"{thanks()}{nom_court}! Voaray daholo ny infos-nao ho an'ny '{produit.nom}'.",
+            f"{thanks_with_name(client.nom)}! Voaray daholo ny infos-nao ho an'ny '{produit.nom}'.",
             f"{greeting(client.nom)}! Azonay tsara ny infos rehetra momba ny '{produit.nom}'.",
             f"{greeting(client.nom)}! Feno daholo ny infos-nao ho an'ny '{produit.nom}'. {thanks()}!",
         ]
@@ -277,7 +276,7 @@ def build_stock_partial_offer_message(commande: Commande, available: int) -> str
     intro = pick(
         [
             f"{greeting(client.nom)}! Voaray ny infos-nao ho an'ny '{produit.nom}'.",
-            f"{thanks()} {first_name(client.nom) or client.nom}! Azonay ny commande-nao '{produit.nom}'.",
+            f"{thanks_with_name(client.nom)}! Azonay ny commande-nao '{produit.nom}'.",
         ]
     )
     situation = (
@@ -348,13 +347,11 @@ def build_thank_you_message(commande: Commande, *, promoted: bool = False) -> st
             ]
         )
     else:
-        fn = first_name(client.nom)
-        nom_court = f' {fn}' if fn else ' tompoko'
         intro = pick(
             [
                 f"{greeting(client.nom)}! Vita ny commande-nao '{produit.nom}' (#{commande.id}). {thanks()}!",
-                f"{thanks()}{nom_court}! Confirmé ny commande-nao '{produit.nom}' (#{commande.id}).",
-                f"{thanks()} betsaka{nom_court}! Vita tsara ny commande-nao "
+                f"{thanks_with_name(client.nom)}! Confirmé ny commande-nao '{produit.nom}' (#{commande.id}).",
+                f"{thanks_with_name(client.nom)}! Vita tsara ny commande-nao "
                 f"'{produit.nom}' (#{commande.id}).",
             ]
         )
@@ -413,7 +410,7 @@ def build_reprise_message(commande: Commande, *, ancienne_id: int, outcome: str)
     intro = pick(
         [
             f"{greeting(client.nom)}! Azonay fa te-hanao indray ny '{produit.nom}'.",
-            f"{thanks()} {first_name(client.nom) or 'tompoko'}! Te-hiverina amin'ny commande ianao.",
+            f"{thanks_with_name(client.nom)}! Te-hiverina amin'ny commande ianao.",
         ]
     )
     regle = (
@@ -462,7 +459,7 @@ def build_reprise_recap_message(commande: Commande) -> str:
     intro = pick(
         [
             f"{greeting(client.nom)}! Ireto ny infos efa fantatra ho an'ny '{produit.nom}' :",
-            f"{thanks()} {first_name(client.nom) or 'tompoko'}! Voaray ireto ny infos-nao :",
+            f"{thanks_with_name(client.nom)}! Voaray ireto ny infos-nao :",
         ]
     )
     lignes = []
@@ -680,7 +677,7 @@ def build_modification_ack_message(
     labels = ', '.join(changed_fields) if changed_fields else 'ny infos'
     intro = pick(
         [
-            f"{thanks()} {first_name(client.nom) or 'tompoko'}! Voaova ny {labels}.",
+            f"{thanks_with_name(client.nom)}! Voaova ny {labels}.",
             f"Ekena {first_name(client.nom) or 'tompoko'}! Nosoloina ny {labels}.",
             f"{greeting(client.nom)}! Vita ny fanovana ({labels}).",
         ]
@@ -713,7 +710,7 @@ def build_modification_revert_message(commande: Commande, *, reprise: bool = Fal
     client = commande.client
     intro = pick(
         [
-            f"{thanks()} {first_name(client.nom) or 'tompoko'}! Voafafana ny fanovana vao hatao.",
+            f"{thanks_with_name(client.nom)}! Voafafana ny fanovana vao hatao.",
             f"{greeting(client.nom)}! Tafaverina ny infos teo alohan'ny fanovana.",
         ]
     )
