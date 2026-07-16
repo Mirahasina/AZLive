@@ -1,5 +1,6 @@
 import hashlib
 import json
+import re
 import secrets
 import urllib.error
 import urllib.parse
@@ -149,9 +150,16 @@ def get_or_create_vendeur_from_tiktok(profile: dict[str, Any], token_payload: di
     if not open_id:
         raise TikTokOAuthError('Identifiant TikTok manquant.')
 
+    from .jp_capture import normalize_tiktok_username
+
     display_name = profile.get('display_name') or 'Vendeur TikTok'
-    username = profile.get('username') or ''
-    tiktok_username = f'@{username.lstrip("@")}' if username else display_name
+    username = (profile.get('username') or '').strip()
+    # Ne jamais stocker le display_name (souvent avec emoji/espaces) comme @TikTok.
+    # Sans username OAuth, on conserve l'existant s'il est valide.
+    tiktok_username = f'@{username.lstrip("@")}' if username else ''
+
+    def _is_valid_handle(value: str) -> bool:
+        return bool(re.fullmatch(r'[a-z0-9._-]+', normalize_tiktok_username(value)))
 
     access_token = token_payload.get('access_token', '')
     refresh_token = token_payload.get('refresh_token')
@@ -160,12 +168,14 @@ def get_or_create_vendeur_from_tiktok(profile: dict[str, Any], token_payload: di
     if existing:
         existing.tiktok_access_token = access_token
         existing.tiktok_refresh_token = refresh_token
-        existing.tiktok_username = tiktok_username
+        update_fields = ['tiktok_access_token', 'tiktok_refresh_token']
+        if tiktok_username and _is_valid_handle(tiktok_username):
+            existing.tiktok_username = tiktok_username
+            update_fields.append('tiktok_username')
         if display_name and existing.nom != display_name:
             existing.nom = display_name
-        existing.save(
-            update_fields=['tiktok_access_token', 'tiktok_refresh_token', 'tiktok_username', 'nom']
-        )
+            update_fields.append('nom')
+        existing.save(update_fields=update_fields)
         user = existing.user
         if not user:
             user = _create_user_for_vendeur(existing, open_id, display_name)
@@ -184,7 +194,7 @@ def get_or_create_vendeur_from_tiktok(profile: dict[str, Any], token_payload: di
         nom=display_name,
         contact='',
         tiktok_open_id=open_id,
-        tiktok_username=tiktok_username,
+        tiktok_username=tiktok_username or None,
         tiktok_access_token=access_token,
         tiktok_refresh_token=refresh_token,
     )

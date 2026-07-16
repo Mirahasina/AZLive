@@ -715,9 +715,30 @@ class DashboardStatsAPIView(APIView):
 
 
 class LiveListCreateView(generics.ListCreateAPIView):
-    queryset = Live.objects.all().order_by('-date_live')
     serializer_class = LiveSerializer
     permission_classes = [AllowAny]
+
+    def get_queryset(self):
+        queryset = Live.objects.select_related('vendeur').all().order_by('-date_live')
+        vendeur_id = self.request.query_params.get('vendeur_id')
+        if vendeur_id:
+            queryset = queryset.filter(vendeur_id=vendeur_id)
+        return queryset
+
+    def list(self, request, *args, **kwargs):
+        # ?sync=1 → démarre uniquement les scouts WebSocket (0 REST = 0 quota API).
+        if str(request.query_params.get('sync') or '') in {'1', 'true', 'yes'}:
+            vendeur_id = request.query_params.get('vendeur_id')
+            try:
+                from .tiktool_live import ensure_tiktok_scouts
+
+                kwargs_scouts = {}
+                if vendeur_id and str(vendeur_id).isdigit():
+                    kwargs_scouts['vendeur_id'] = int(vendeur_id)
+                ensure_tiktok_scouts(**kwargs_scouts)
+            except Exception:
+                pass
+        return super().list(request, *args, **kwargs)
 
 
 class LiveDetailView(generics.RetrieveUpdateDestroyAPIView):

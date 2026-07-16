@@ -121,7 +121,10 @@ class _JpRelanceScheduler(threading.Thread):
             f'max={getattr(settings, "AZLIVE_JP_MAX_RELANCES", 3)})'
         )
         logger.info(msg)
-        print(f'\n⏰ [JP RELANCES] {msg}\n', flush=True)
+        try:
+            print(f'\n[JP RELANCES] {msg}\n', flush=True)
+        except UnicodeEncodeError:
+            pass
         # Premier passage après un court délai : laisser Django finir le boot.
         if self._stop.wait(5):
             return

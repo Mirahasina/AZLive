@@ -17,6 +17,20 @@ class BackendConfig(AppConfig):
         # Évite le double démarrage du parent runserver (autoreloader).
         if 'runserver' in sys.argv and os.environ.get('RUN_MAIN') != 'true':
             return
+
+        # Threads background UNIQUEMENT pour un serveur HTTP long-vivant.
+        # (évite de lancer watchdog/JP sur sync_tiktok_lives, tiktool_quota, etc.)
+        argv_joined = ' '.join(sys.argv).lower()
+        is_server = (
+            'runserver' in sys.argv
+            or 'gunicorn' in argv_joined
+            or 'uvicorn' in argv_joined
+            or 'daphne' in argv_joined
+            or os.environ.get('AZLIVE_START_BACKGROUND') == '1'
+        )
+        if not is_server:
+            return
+
         if any(cmd in sys.argv for cmd in ('test', 'migrate', 'makemigrations', 'collectstatic', 'shell')):
             return
 
@@ -29,15 +43,9 @@ class BackendConfig(AppConfig):
 
         def _recover_listeners_once():
             from .facebook_live_comments import recover_facebook_comment_listeners
-            from .tiktool_live import recover_tiktool_listeners, sync_external_tiktok_lives
+            from .tiktool_live import reconcile_ended_tiktok_lives, recover_tiktool_listeners
 
-            # Sync TikTok et recovery des listeners sont indépendants :
-            # une erreur réseau TikTools ne doit pas empêcher de relancer les WS.
-            try:
-                sync_external_tiktok_lives()
-            except Exception:
-                logger.exception('Watchdog: échec sync_external_tiktok_lives')
-
+            # Scouts WS (0 REST) + périodiquement clôture si TikTok offline.
             try:
                 recover_facebook_comment_listeners()
             except Exception:
@@ -50,15 +58,26 @@ class BackendConfig(AppConfig):
             except Exception:
                 logger.exception('Watchdog: échec recover_tiktool_listeners')
 
+            try:
+                ended = reconcile_ended_tiktok_lives()
+                if ended:
+                    logger.info('Watchdog: %s live(s) TikTok clôturé(s)/archivé(s)', ended)
+            except Exception:
+                logger.exception('Watchdog: échec reconcile_ended_tiktok_lives')
+
         def _watchdog():
-            # Background seulement : detection REST espacée pour éviter les 429 TikTools.
-            interval = float(os.environ.get('AZLIVE_LISTENER_WATCHDOG_SECONDS', '45'))
-            time.sleep(2.0)
+            interval = float(os.environ.get('AZLIVE_LISTENER_WATCHDOG_SECONDS', '60'))
+            time.sleep(1.0)
+            # Premier démarrage immédiat des scouts (détection roomInfo).
+            try:
+                _recover_listeners_once()
+            except Exception:
+                logger.exception('Watchdog listener: erreur au démarrage')
             while True:
+                time.sleep(max(interval, 30.0))
                 try:
                     _recover_listeners_once()
                 except Exception:
                     logger.exception('Watchdog listener: erreur inattendue')
-                time.sleep(max(interval, 30.0))
 
         threading.Thread(target=_watchdog, name='azlive-listener-watchdog', daemon=True).start()
