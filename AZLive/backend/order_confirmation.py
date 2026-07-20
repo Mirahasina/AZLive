@@ -2450,7 +2450,7 @@ def _finalize_confirmation(
     """
     with transaction.atomic():
         locked = (
-            Commande.objects.select_for_update()
+            Commande.objects.select_for_update(of=('self',))
             .select_related('client', 'produit', 'variante', 'live')
             .get(pk=commande.pk)
         )

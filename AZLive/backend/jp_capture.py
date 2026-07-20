@@ -79,16 +79,25 @@ def create_jp_commande(client, produit, live=None, canal='', comment_id=None, va
 def _candidate_code(analysis) -> str:
     """Code JP candidat (nu) déduit du commentaire.
 
-    On privilégie ``code_jp`` puis le texte brut du commentaire : le LLM remplit
-    souvent ``product_query`` avec le *nom* du produit (« Tee-shirt ») et non le
-    code tapé (« 2 »), ce qui cassait ``resolve_live_variante``.
-    normalize_jp_code retire un éventuel préfixe « JP » résiduel.
+    On privilégie ``raw_text`` / ``cleaned_text`` : le LLM ou le regex catalogue
+    remplit souvent ``code_jp`` avec un code *catalogue* (ex. FIFO1) alors que le
+    client a tapé le code *live* (« 1 »), ce qui cassait ``resolve_live_variante``.
     """
-    for key in ('code_jp', 'raw_text', 'product_query'):
+    for key in ('raw_text', 'cleaned_text', 'product_query', 'code_jp'):
         candidate = normalize_jp_code(analysis.get(key))
         if candidate:
             return candidate
     return ''
+
+
+def _candidate_codes(analysis) -> list[str]:
+    """Tous les codes candidats, du plus fidèle au texte tapé vers le catalogue."""
+    codes: list[str] = []
+    for key in ('raw_text', 'cleaned_text', 'product_query', 'code_jp'):
+        candidate = normalize_jp_code(analysis.get(key))
+        if candidate and candidate not in codes:
+            codes.append(candidate)
+    return codes
 
 
 def resolve_live_variante(live, analysis, vendeur=None):
@@ -97,27 +106,32 @@ def resolve_live_variante(live, analysis, vendeur=None):
     Prioritaire sur la détection par nom : si le code tapé correspond à un code
     attribué dans ce live, c'est cette variante (et donc ce produit) qui prime.
     """
-    code = _candidate_code(analysis)
-    if live is None or not code:
+    if live is None:
         return None
-    queryset = LiveCodeJP.objects.filter(live=live, code__iexact=code).select_related(
-        'variante', 'variante__produit'
-    )
-    if vendeur:
-        queryset = queryset.filter(variante__produit__vendeur=vendeur)
-    mapping = queryset.first()
-    if mapping:
-        return mapping.variante
 
-    # Fallback : code catalogue (variante.code_jp) parmi le dressing du live.
-    dressing_qs = live.produits_dressing.all()
-    if vendeur:
-        dressing_qs = dressing_qs.filter(vendeur=vendeur)
-    return (
-        Variante.objects.filter(produit__in=dressing_qs, code_jp__iexact=code)
-        .select_related('produit')
-        .first()
-    )
+    for code in _candidate_codes(analysis):
+        queryset = LiveCodeJP.objects.filter(live=live, code__iexact=code).select_related(
+            'variante', 'variante__produit'
+        )
+        if vendeur:
+            queryset = queryset.filter(variante__produit__vendeur=vendeur)
+        mapping = queryset.first()
+        if mapping:
+            return mapping.variante
+
+        # Fallback : code catalogue (variante.code_jp) parmi le dressing du live.
+        dressing_qs = live.produits_dressing.all()
+        if vendeur:
+            dressing_qs = dressing_qs.filter(vendeur=vendeur)
+        variante = (
+            Variante.objects.filter(produit__in=dressing_qs, code_jp__iexact=code)
+            .select_related('produit')
+            .first()
+        )
+        if variante:
+            return variante
+
+    return None
 
 
 def resolve_variante_for_analysis(produit, analysis, live=None):
