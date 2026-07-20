@@ -69,12 +69,10 @@ def _pending_commandes(live: Live, clients):
 
 
 def _commande_is_eligible(commande: Commande) -> bool:
-    """Assez de stock après les JP devant (même live) pour confirmer maintenant."""
-    remaining = _stock_remaining_for(commande)
-    if remaining is None:
-        return True
-    return remaining >= commande.quantite_effective
+    """Tête de file + assez de stock pour confirmer maintenant."""
+    from .order_confirmation import _order_is_eligible
 
+    return _order_is_eligible(commande)
 
 def _infos_completes(commande: Commande) -> bool:
     return not _missing_confirmation_fields(commande)

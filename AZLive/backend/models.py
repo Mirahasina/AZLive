@@ -211,6 +211,10 @@ class Client(models.Model):
         return self.nom
 
 
+class StockAdjustmentError(ValueError):
+    """Stock insuffisant (ou variante absente) lors d'une confirmation."""
+
+
 class Commande(models.Model):
     STATUT_JP_CAPTURE = 'jp_capture'
     STATUT_CONFIRME = 'confirme'
@@ -261,15 +265,22 @@ class Commande(models.Model):
             except Commande.DoesNotExist:
                 pass
 
-        super().save(*args, **kwargs)
+        to_confirm = (is_new and self.statut == self.STATUT_CONFIRME) or (
+            old_status != self.STATUT_CONFIRME and self.statut == self.STATUT_CONFIRME
+        )
+        from_confirm_to_cancel = (
+            old_status == self.STATUT_CONFIRME and self.statut == self.STATUT_ANNULE
+        )
 
-        # Decrement stock if transitioning to Confirmed
-        if (is_new and self.statut == self.STATUT_CONFIRME) or (old_status != self.STATUT_CONFIRME and self.statut == self.STATUT_CONFIRME):
-            self._adjust_variante_stock(-self.quantite_effective)
-
-        # Increment stock if transitioning from Confirmed to Cancelled
-        elif old_status == self.STATUT_CONFIRME and self.statut == self.STATUT_ANNULE:
+        # Réserver / libérer le stock AVANT de publier le statut.
+        # Sinon un concurrent peut lire « confirmé » alors que le stock est encore plein
+        # et confirmer à tort le suivant (facture), puis lui renvoyer une liste d'attente.
+        if to_confirm:
+            self._adjust_variante_stock(-self.quantite_effective, required=True)
+        elif from_confirm_to_cancel:
             self._adjust_variante_stock(self.quantite_effective)
+
+        super().save(*args, **kwargs)
 
         # Queue Promotion Logic!
         if not is_new and old_status != self.STATUT_ANNULE and self.statut == self.STATUT_ANNULE:
@@ -280,11 +291,26 @@ class Commande(models.Model):
             return self.variante
         return self.produit.variantes.order_by('id').first()
 
-    def _adjust_variante_stock(self, delta):
+    def _adjust_variante_stock(self, delta, *, required: bool = False) -> bool:
+        """Ajuste le stock sous verrou. required=True lève si le stock ne suffit pas."""
         variante = self._get_stock_variante()
-        if variante and variante.stock + delta >= 0:
-            variante.stock += delta
-            variante.save(update_fields=['stock'])
+        if not variante:
+            if required and delta < 0:
+                raise StockAdjustmentError('Aucune variante pour ajuster le stock.')
+            return True
+
+        locked = type(variante).objects.select_for_update().get(pk=variante.pk)
+        if locked.stock + delta < 0:
+            if required:
+                raise StockAdjustmentError(
+                    f'Stock insuffisant ({locked.stock} disponible).'
+                )
+            return False
+
+        locked.stock += delta
+        locked.save(update_fields=['stock'])
+        variante.stock = locked.stock
+        return True
 
     def get_prix_unitaire(self):
         if self.variante_id:

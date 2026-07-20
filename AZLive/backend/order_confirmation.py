@@ -8,7 +8,16 @@ from typing import Any
 from django.db import models, transaction
 from django.utils import timezone
 
-from .models import Client, Commande, Live, Message, Paiement, PageFacebook, Vendeur
+from .models import (
+    Client,
+    Commande,
+    Live,
+    Message,
+    Paiement,
+    PageFacebook,
+    StockAdjustmentError,
+    Vendeur,
+)
 from .serializers import CommandeSerializer
 
 logger = logging.getLogger(__name__)
@@ -1048,26 +1057,16 @@ def find_cancellable_commande(client: Client, vendeur: Vendeur | None = None) ->
 
 
 def _stock_remaining_for(commande: Commande) -> int | None:
-    """Stock encore disponible pour cette commande (après file JP devant elle).
+    """Stock visible pour cette commande (0 si ce n'est pas encore son tour).
 
     None = pas de variante / stock non applicable (éligible par défaut).
-    La file « devant » est limitée au même live quand possible.
     """
     variante = commande._get_stock_variante()
     if not variante:
         return None
-
-    ahead = Commande.objects.filter(
-        produit=commande.produit,
-        variante=commande.variante,
-        statut=Commande.STATUT_JP_CAPTURE,
-        ordre_jp__lt=commande.ordre_jp,
-    ).exclude(pk=commande.pk)
-    if commande.live_id:
-        ahead = ahead.filter(live_id=commande.live_id)
-
-    qty_ahead = sum(c.quantite_effective for c in ahead)
-    return max(variante.stock - qty_ahead, 0)
+    if _has_pending_ahead(commande):
+        return 0
+    return max(int(variante.stock), 0)
 
 
 def cancel_commande_public(commande: Commande) -> dict[str, Any]:
@@ -1591,31 +1590,40 @@ def _is_quantity_line(line: str) -> bool:
     )
 
 
+def _has_pending_ahead(commande: Commande) -> bool:
+    """True s'il reste un JP devant celui-ci (file FIFO stricte)."""
+    return (
+        Commande.objects.filter(
+            produit=commande.produit,
+            variante=commande.variante,
+            statut=Commande.STATUT_JP_CAPTURE,
+            ordre_jp__lt=commande.ordre_jp,
+        )
+        .exclude(pk=commande.pk)
+        .exists()
+    )
+
+
 def _available_stock_for_commande(commande: Commande) -> int:
-    """Stock réellement disponible pour cette commande (après les JP devant elle)."""
+    """Stock utilisable pour cette commande : uniquement à son tour (tête de file).
+
+    Tant qu'un JP devant est encore ouvert, le client n'a pas la main — même s'il
+    resterait du stock « en théorie » après la quantité du premier.
+    """
+    if _has_pending_ahead(commande):
+        return 0
     variante = commande._get_stock_variante()
     if not variante:
         return 10**9
-    remaining = max(0, int(variante.stock))
-    ahead = Commande.objects.filter(
-        produit=commande.produit,
-        variante=commande.variante,
-        statut=Commande.STATUT_JP_CAPTURE,
-        ordre_jp__lt=commande.ordre_jp,
-    ).exclude(pk=commande.pk)
-    qty_ahead = sum(c.quantite_effective for c in ahead)
-    return max(0, remaining - qty_ahead)
+    return max(0, int(variante.stock))
 
 
 def _order_is_eligible(commande: Commande) -> bool:
-    """Vrai si la commande peut être confirmée maintenant (assez de stock, à son tour).
-
-    Le stock courant de la variante reflète déjà les commandes confirmées (décrémentées).
-    On ne compte donc que les JP encore en attente PLACÉS DEVANT (ordre_jp plus petit) :
-    s'ils consomment déjà tout le stock, ce client reste en liste d'attente.
-    """
-    return _available_stock_for_commande(commande) >= commande.quantite_effective
-
+    """Vrai si c'est son tour (personne devant) et qu'il reste assez de stock."""
+    return (
+        not _has_pending_ahead(commande)
+        and _available_stock_for_commande(commande) >= commande.quantite_effective
+    )
 
 ACCEPT_PARTIAL_PATTERNS = [
     re.compile(r'\b(?:oui|ok|oka|eken[ao]?|eka|prend|prends|prendre|alaina|alaiko|tonga)\b', re.I),
@@ -2303,6 +2311,11 @@ def handle_client_reply(
                 'message_delivery': outbound.get('delivery'),
             }
 
+    # Un traitement concurrent a pu confirmer entre-temps (webhook + inbox, etc.).
+    commande.refresh_from_db()
+    if commande.statut == Commande.STATUT_CONFIRME:
+        return _already_confirmed_result(commande, parsed_data=parsed_data)
+
     available = _available_stock_for_commande(commande)
     requested = commande.quantite_effective
 
@@ -2317,20 +2330,13 @@ def handle_client_reply(
             if _order_is_eligible(commande):
                 return _finalize_confirmation(commande, parsed_data=parsed_data)
         elif _looks_like_prefer_wait(inbound_text):
-            from .order_messaging import send_waiting_with_info_message
-
-            outbound = send_waiting_with_info_message(commande)
-            return {
-                'status': "En liste d'attente — client préfère attendre",
-                'complet': False,
-                'en_attente': True,
-                'stock_restant': available,
-                'quantite_demandee': requested,
-                'commande': CommandeSerializer(commande).data,
-                'client': _client_snapshot(client),
-                'message_attente': outbound.get('content'),
-                'message_delivery': outbound.get('delivery'),
-            }
+            return _waiting_list_result(
+                commande,
+                parsed_data=parsed_data,
+                available=available,
+                requested=requested,
+                status="En liste d'attente — client préfère attendre",
+            )
         else:
             from .order_messaging import send_stock_partial_offer_message
 
@@ -2349,23 +2355,79 @@ def handle_client_reply(
 
     # Infos complètes, mais file d'attente (plus de stock ou personnes devant).
     if not _order_is_eligible(commande):
+        return _waiting_list_result(
+            commande,
+            parsed_data=parsed_data,
+            available=available,
+            status="En liste d'attente — informations enregistrées",
+        )
+
+    return _finalize_confirmation(commande, parsed_data=parsed_data)
+
+
+def _already_confirmed_result(
+    commande: Commande,
+    *,
+    parsed_data: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """Réponse idempotente : déjà confirmée, sans renvoyer facture ni liste d'attente."""
+    paiement = _ensure_paiement(commande)
+    return {
+        'status': 'Commande confirmée',
+        'complet': True,
+        'already_confirmed': True,
+        'commande': CommandeSerializer(commande).data,
+        'reglement': {'methode': paiement.methode, 'statut': paiement.statut},
+        'client': _client_snapshot(commande.client),
+        'parsed': parsed_data or {},
+    }
+
+
+def _waiting_list_result(
+    commande: Commande,
+    *,
+    parsed_data: dict[str, str] | None = None,
+    available: int | None = None,
+    requested: int | None = None,
+    status: str = "En liste d'attente — informations enregistrées",
+) -> dict[str, Any]:
+    """Envoie attente (file) ou rupture de stock, sauf si déjà confirmée entre-temps."""
+    commande.refresh_from_db()
+    if commande.statut == Commande.STATUT_CONFIRME:
+        return _already_confirmed_result(commande, parsed_data=parsed_data)
+
+    stock = available if available is not None else _available_stock_for_commande(commande)
+    # Tête de file mais plus de stock → message « lany ny X… », pas la file d'attente.
+    sold_out = not _has_pending_ahead(commande) and stock <= 0
+
+    if sold_out:
+        from .order_messaging import send_sold_out_message
+
+        outbound = send_sold_out_message(commande)
+        status = 'Rupture de stock — invite à voir le live'
+        message_key = 'message_rupture'
+    else:
         from .order_messaging import send_waiting_with_info_message
 
         outbound = send_waiting_with_info_message(commande)
-        return {
-            'status': "En liste d'attente — informations enregistrées",
-            'complet': False,
-            'en_attente': True,
-            'stock_restant': available,
-            'champs_manquants': [],
-            'commande': CommandeSerializer(commande).data,
-            'client': _client_snapshot(client),
-            'parsed': parsed_data,
-            'message_attente': outbound.get('content'),
-            'message_delivery': outbound.get('delivery'),
-        }
+        message_key = 'message_attente'
 
-    return _finalize_confirmation(commande, parsed_data=parsed_data)
+    payload: dict[str, Any] = {
+        'status': status,
+        'complet': False,
+        'en_attente': True,
+        'rupture_stock': sold_out,
+        'stock_restant': stock,
+        'champs_manquants': [],
+        'commande': CommandeSerializer(commande).data,
+        'client': _client_snapshot(commande.client),
+        'parsed': parsed_data or {},
+        message_key: outbound.get('content'),
+        'message_delivery': outbound.get('delivery'),
+    }
+    if requested is not None:
+        payload['quantite_demandee'] = requested
+    return payload
 
 
 def _finalize_confirmation(
@@ -2373,33 +2435,81 @@ def _finalize_confirmation(
     *,
     parsed_data: dict[str, str] | None = None,
     promoted: bool = False,
+    promote_next: bool = True,
 ) -> dict[str, Any]:
     """Confirme la commande : statut CONFIRME (décrément stock via save) + règlement + message.
 
     promoted=True quand la confirmation vient d'une montée en file (une place s'est libérée
     et les informations du client étaient déjà complètes) : le message le signale.
+
+    Sous verrou : re-vérifie l'éligibilité pour éviter qu'un 2ᵉ client confirme pendant
+    que le 1ᵉr passe à « confirmé » mais avant que le stock soit réservé.
+
+    promote_next=True : après confirmation, avance la file (le suivant complet peut
+    confirmer s'il reste du stock). Désactivé quand on est déjà dans promote_queue.
     """
-    commande.statut = Commande.STATUT_CONFIRME
-    commande.save(update_fields=['statut'])
-    _clear_modification_snapshot(commande)
-    paiement = _ensure_paiement(commande)
+    with transaction.atomic():
+        locked = (
+            Commande.objects.select_for_update()
+            .select_related('client', 'produit', 'variante', 'live')
+            .get(pk=commande.pk)
+        )
+        if locked.statut == Commande.STATUT_CONFIRME:
+            return _already_confirmed_result(locked, parsed_data=parsed_data)
+        if locked.statut != Commande.STATUT_JP_CAPTURE:
+            raise OrderConfirmationError(
+                f'La commande #{locked.id} est déjà au statut {locked.get_statut_display()}.',
+                status_code=409,
+            )
 
-    from .order_messaging import send_order_confirmed_message
+        variante = locked._get_stock_variante()
+        if variante:
+            type(variante).objects.select_for_update().get(pk=variante.pk)
+            if locked.variante_id:
+                locked.variante.refresh_from_db()
 
-    outbound = send_order_confirmed_message(commande, promoted=promoted)
+        if not _order_is_eligible(locked):
+            return _waiting_list_result(
+                locked,
+                parsed_data=parsed_data,
+                status="En liste d'attente — informations enregistrées",
+            )
 
-    return {
-        'status': 'Commande confirmée',
-        'complet': True,
-        'commande': CommandeSerializer(commande).data,
-        'reglement': {'methode': paiement.methode, 'statut': paiement.statut},
-        'client': _client_snapshot(commande.client),
-        'parsed': parsed_data or {},
-        'message_remerciement': outbound.get('content'),
-        'message_delivery': outbound.get('delivery'),
-        'facture_url': outbound.get('facture_url'),
-        'etiquette_url': outbound.get('etiquette_url'),
-    }
+        try:
+            locked.statut = Commande.STATUT_CONFIRME
+            locked.save(update_fields=['statut'])
+        except StockAdjustmentError:
+            return _waiting_list_result(
+                locked,
+                parsed_data=parsed_data,
+                status="En liste d'attente — informations enregistrées",
+            )
+
+        _clear_modification_snapshot(locked)
+        paiement = _ensure_paiement(locked)
+
+        from .order_messaging import send_order_confirmed_message
+
+        outbound = send_order_confirmed_message(locked, promoted=promoted)
+
+        result = {
+            'status': 'Commande confirmée',
+            'complet': True,
+            'commande': CommandeSerializer(locked).data,
+            'reglement': {'methode': paiement.methode, 'statut': paiement.statut},
+            'client': _client_snapshot(locked.client),
+            'parsed': parsed_data or {},
+            'message_remerciement': outbound.get('content'),
+            'message_delivery': outbound.get('delivery'),
+            'facture_url': outbound.get('facture_url'),
+            'etiquette_url': outbound.get('etiquette_url'),
+        }
+
+    # Hors du verrou commande : enchaîne sur le suivant (FIFO).
+    if promote_next and result.get('complet'):
+        promote_queue(locked.produit, variante=locked.variante, exclude_pk=locked.pk)
+
+    return result
 
 
 @transaction.atomic
@@ -2451,6 +2561,11 @@ def promote_queue(produit, variante=None, exclude_pk=None) -> None:
 
         available = _available_stock_for_commande(commande)
         if available <= 0:
+            # Suivant à son tour mais plus de stock : prévenir (s'il a déjà les infos).
+            if not _missing_confirmation_fields(commande):
+                from .order_messaging import send_sold_out_message
+
+                send_sold_out_message(commande)
             return
 
         missing = _missing_confirmation_fields(commande)
@@ -2477,8 +2592,12 @@ def promote_queue(produit, variante=None, exclude_pk=None) -> None:
             send_public_form_spot_available_message(commande)
             return
 
-        # Messenger / autres canaux : confirmation automatique si infos déjà complètes.
-        _finalize_confirmation(commande, promoted=True)
+        result = _finalize_confirmation(commande, promoted=True, promote_next=False)
+        if not result.get('complet'):
+            # Course sur le stock : plus éligible au moment du verrou — on s'arrête.
+            return
+        # Sinon on continue : une confirmation peut libérer la place suivante
+        # uniquement si stock > 1 ; sinon le prochain tour verra available <= 0.
 
 
 @transaction.atomic

@@ -278,10 +278,9 @@ def send_completion_request_message(commande: Commande, missing_fields: list[str
 
 
 def build_waiting_with_info_message(commande: Commande) -> str:
-    """Le client a tout fourni mais reste en liste d'attente (stock pas encore dispo)."""
+    """Le client a tout fourni mais reste en liste d'attente (quelqu'un devant lui)."""
     client = commande.client
     produit = commande.produit
-    fn = first_name(client.nom)
     intro = pick(
         [
             f"{thanks_with_name(client.nom)}! Voaray daholo ny infos-nao ho an'ny '{produit.nom}'.",
@@ -306,6 +305,33 @@ def build_waiting_with_info_message(commande: Commande) -> str:
 
 def send_waiting_with_info_message(commande: Commande) -> dict[str, Any]:
     content = build_waiting_with_info_message(commande)
+    delivery = _deliver_private_message(commande, content)
+    return {'content': content, 'delivery': delivery}
+
+
+def build_sold_out_message(commande: Commande) -> str:
+    """Stock épuisé pour le produit demandé : invite à regarder le reste du live."""
+    client = commande.client
+    produit = commande.produit
+    intro = pick(
+        [
+            f"{greeting(client.nom)}! Lany ny '{produit.nom}' izay nangatahinao.",
+            f"{thanks_with_name(client.nom)}! Lany ny '{produit.nom}' izay nangatahinao.",
+            f"{greeting(client.nom)}! Tapitra ny stock amin'ny '{produit.nom}' nangatahinao.",
+        ]
+    )
+    suite = pick(
+        [
+            "Afaka mijery zavatra hafa anaty live ianao raha misy mahaliana anao.",
+            "Jereo ny zavatra hafa ao amin'ny live raha misy tianao.",
+            "Raha misy hafa mahaliana anao ao amin'ny live, afaka manao JP indray ianao.",
+        ]
+    )
+    return f'{intro} {suite}{emoji(prob=0.35)}'
+
+
+def send_sold_out_message(commande: Commande) -> dict[str, Any]:
+    content = build_sold_out_message(commande)
     delivery = _deliver_private_message(commande, content)
     return {'content': content, 'delivery': delivery}
 
