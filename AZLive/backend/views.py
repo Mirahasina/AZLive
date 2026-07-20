@@ -529,9 +529,16 @@ class CommandeConfirmerAPIView(APIView):
             except OrderConfirmationError as exc:
                 return Response({'detail': exc.message, **exc.payload}, status=exc.status_code)
 
+        from .order_confirmation import _analyzer_client_for_commande
+
+        analyzer_client = (
+            _analyzer_client_for_commande(commande)
+            if commande.statut == Commande.STATUT_JP_CAPTURE
+            else commande.client
+        )
         parsed = analyze_confirmation_message(
             request.data.get('message_text', ''),
-            client=commande.client,
+            client=analyzer_client,
         )
         if not parsed:
             parsed = {

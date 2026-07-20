@@ -254,7 +254,7 @@ class Commande(models.Model):
         """Une place s'est libérée : avance la file (confirme les suivants complets, sinon relance)."""
         from .order_confirmation import promote_queue
 
-        promote_queue(self.produit, variante=self.variante, exclude_pk=self.pk)
+        promote_queue(self.produit, variante=self.variante, exclude_pk=self.pk, live=self.live)
 
     def save(self, *args, **kwargs):
         is_new = self.pk is None
@@ -324,11 +324,11 @@ class Commande(models.Model):
     def delete(self, *args, **kwargs):
         if self.statut == self.STATUT_CONFIRME:
             self._adjust_variante_stock(self.quantite_effective)
-        produit, variante, pk = self.produit, self.variante, self.pk
+        produit, variante, pk, live = self.produit, self.variante, self.pk, self.live
         super().delete(*args, **kwargs)
         from .order_confirmation import promote_queue
 
-        promote_queue(produit, variante=variante, exclude_pk=pk)
+        promote_queue(produit, variante=variante, exclude_pk=pk, live=live)
 
     def __str__(self):
         return f"Commande #{self.pk} - {self.client.nom} - {self.produit.nom}"
