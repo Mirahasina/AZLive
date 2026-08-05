@@ -430,7 +430,7 @@ def build_tiktok_confirmation_comment(live: Live) -> str:
     from .order_messaging import public_order_form_url
 
     return (
-        "📦 Pour confirmer votre commande, cliquez ici :\n"
+        " Pour confirmer votre commande, cliquez ici:\n"
         f"{public_order_form_url(live.id)}"
     )
 

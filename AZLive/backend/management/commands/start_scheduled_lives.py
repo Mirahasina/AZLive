@@ -53,7 +53,7 @@ class Command(BaseCommand):
             skipped = queryset.filter(date_live__lt=floor)
             for live in skipped:
                 self.stdout.write(self.style.WARNING(
-                    f"⏭  Live #{live.pk} «{live.titre}» ignoré (retard > {max_delay} min, "
+                    f" Live #{live.pk} «{live.titre}» ignoré (retard > {max_delay} min, "
                     f"planifié le {live.date_live:%Y-%m-%d %H:%M})."
                 ))
             queryset = queryset.filter(date_live__gte=floor)
@@ -73,11 +73,11 @@ class Command(BaseCommand):
             try:
                 demarrer_live(live)
                 started += 1
-                self.stdout.write(self.style.SUCCESS(f"✔ Démarré : {label}"))
+                self.stdout.write(self.style.SUCCESS(f" Démarré: {label}"))
             except LiveServiceError as exc:
-                self.stdout.write(self.style.ERROR(f"✗ Échec {label} : {exc.message}"))
+                self.stdout.write(self.style.ERROR(f" Échec {label}: {exc.message}"))
             except Exception as exc:  # noqa: BLE001
-                self.stdout.write(self.style.ERROR(f"✗ Erreur inattendue {label} : {exc}"))
+                self.stdout.write(self.style.ERROR(f" Erreur inattendue {label}: {exc}"))
 
         if not dry_run:
             self.stdout.write(self.style.SUCCESS(f"Terminé. Lives démarrés : {started}"))

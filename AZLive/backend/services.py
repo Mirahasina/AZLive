@@ -18,7 +18,7 @@ class MessagingService:
             "Mba hahavita ny commande, omeo anay ny anaranao, numéro, adresse ary ny daty hanaterana.",
         ])
         message_content = (
-            f"{greeting(client.nom)} 😊 Voaray ny JP-nao ho an'ny '{produit.nom}'. {demande}{emoji(prob=0.3)}"
+            f"{greeting(client.nom)} Voaray ny JP-nao ho an'ny '{produit.nom}'. {demande}{emoji(prob=0.3)}"
         )
         logger.info(f"[SMS/MESSENGER MOCK] Envoyé à {client.telephone or 'Client ID ' + str(client.id)} (Commande #{order_id}) : '{message_content}'")
         print(f"\n [MESSAGING SERVICE] Message envoyé avec succès à {client.nom} ({client.telephone or 'Social Platform'}):")
@@ -35,7 +35,7 @@ class MessagingService:
             f"Mbola miandry ny adresse-nao sy ny daty hanaterana izahay azafady.{emoji(prob=0.3)}"
         )
         logger.info(f"[SMS/MESSENGER RELANCE MOCK] Relance #{numero_relance} envoyée à {client.telephone or 'Client ID ' + str(client.id)} : '{message_content}'")
-        print(f"\n⏰ [MESSAGING SERVICE] Relance #{numero_relance} envoyée à {client.nom} ({client.telephone or 'Social Platform'}):")
+        print(f"\n [MESSAGING SERVICE] Relance #{numero_relance} envoyée à {client.nom} ({client.telephone or 'Social Platform'}):")
         print(f"   > '{message_content}'\n")
         return True
 
@@ -45,7 +45,7 @@ class MessagingService:
         Simulates sending a waiting list notification in Malagasy.
         """
         message_content = (
-            f"{greeting(client.nom)} 😊 Voaray ny JP-nao ho an'ny '{produit.nom}'. "
+            f"{greeting(client.nom)} Voaray ny JP-nao ho an'ny '{produit.nom}'. "
             f"Fa efa misy nanao commande mialoha, ka ao amin'ny liste d'attente ianao izao (numéro {ordre_jp}). "
             f"Hilazanay anao raha vao misy toerana."
         )

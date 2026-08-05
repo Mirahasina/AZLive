@@ -2,7 +2,7 @@
 
 Objectif : que les messages envoyés aux clients ne sonnent pas « robot ». On ne
 génère rien avec une IA (risque d'inventer un prix/stock) ; on combine plutôt
-des fragments rédigés à la main (salutations, remerciements, relances, emojis)
+des fragments rédigés à la main (salutations, remerciements, relances)
 tirés au hasard, plus le prénom du client. Le client ne voit donc presque jamais
 deux fois exactement la même tournure.
 
@@ -51,12 +51,5 @@ def thanks() -> str:
 
 
 def emoji(prob: float = 0.5, choices: list[str] | None = None) -> str:
-    """Renvoie « ' 😊' » (avec espace) avec une probabilité donnée, sinon ''.
-
-    Usage parcimonieux : un emoji de temps en temps rend le ton chaleureux ;
-    à chaque message ça ferait au contraire « bot ».
-    """
-    choices = choices or ['😊', '🙏', '❤️', '🥰']
-    if random.random() < prob:
-        return ' ' + random.choice(choices)
+    """Ancien helper emoji — désactivé (pas d'emoji dans les messages)."""
     return ''

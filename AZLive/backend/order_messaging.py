@@ -109,10 +109,10 @@ def build_tiktok_jp_comment_reply(commande: Commande) -> str:
     if commande.live_id:
         link = public_order_form_url(commande.live_id)
         return (
-            f'Bonjour {salutation}😊 merci pour votre intérêt ! '
-            f'Complétez vos infos ici 👉 {link}'
+            f'Bonjour {salutation} merci pour votre intérêt! '
+            f'Complétez vos infos ici {link}'
         )
-    return f'Bonjour {salutation}😊 merci pour votre intérêt ! Contactez le vendeur pour vos infos.'
+    return f'Bonjour {salutation} merci pour votre intérêt! Contactez le vendeur pour vos infos.'
 
 
 def build_jp_confirmation_message(commande: Commande) -> str:
@@ -128,7 +128,7 @@ def build_jp_confirmation_message(commande: Commande) -> str:
     if not _order_is_eligible(commande):
         intro = pick(
             [
-                f"{hello} 😊 Voaray ny JP-nao ho an'ny '{produit.nom}'.",
+                f"{hello} Voaray ny JP-nao ho an'ny '{produit.nom}'.",
                 f"{hello}! Efa azonay ny JP-nao ho an'ny '{produit.nom}'.",
                 f"{hello}! Tonga soa ny JP-nao ho an'ny '{produit.nom}'.",
             ]
@@ -151,7 +151,7 @@ def build_jp_confirmation_message(commande: Commande) -> str:
 
     intro = pick(
         [
-            f"{hello} 😊 Voaray ny JP-nao ho an'ny '{produit.nom}' (Commande #{commande.id}).",
+            f"{hello} Voaray ny JP-nao ho an'ny '{produit.nom}' (Commande #{commande.id}).",
             f"{hello}! Efa azonay ny JP-nao ho an'ny '{produit.nom}' (Commande #{commande.id}).",
             f"{hello}! Tonga soa ny JP-nao ho an'ny '{produit.nom}' (Commande #{commande.id}).",
         ]
