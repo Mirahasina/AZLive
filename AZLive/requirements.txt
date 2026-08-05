@@ -1,0 +1,14 @@
+# AZLive Django API — pin for reproducible Render / local deploys
+asgiref==3.11.1
+Django==6.0.6
+django-cors-headers==4.9.0
+djangorestframework==3.17.1
+gunicorn==23.0.0
+packaging==25.0
+pillow==12.2.0
+psycopg2-binary==2.9.12
+reportlab==4.5.1
+sqlparse==0.5.5
+tzdata==2026.2
+websocket-client==1.9.0
+whitenoise==6.9.0

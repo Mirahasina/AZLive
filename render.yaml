@@ -1,0 +1,35 @@
+# Blueprint Render — New → Blueprint → connect this repo
+# Docs: https://render.com/docs/blueprint-spec
+
+databases:
+  - name: azlive-db
+    plan: free
+
+services:
+  - type: web
+    name: azlive-api
+    runtime: python
+    plan: free
+    rootDir: AZLive
+    buildCommand: pip install -r requirements.txt && python manage.py collectstatic --noinput && python manage.py migrate --noinput
+    startCommand: gunicorn AZLive.wsgi:application --bind 0.0.0.0:$PORT
+    healthCheckPath: /admin/login/
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.8"
+      - key: SECRET_KEY
+        generateValue: true
+      - key: DEBUG
+        value: "false"
+      - key: ALLOWED_HOSTS
+        value: ".onrender.com"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: azlive-db
+          property: connectionString
+      - key: MEDIAMTX_ENABLED
+        value: "false"
+      # Remplir après déploiement (URLs Vercel + secrets OAuth) :
+      # FACEBOOK_APP_ID, FACEBOOK_APP_SECRET, FACEBOOK_REDIRECT_URI,
+      # FACEBOOK_LOGIN_SUCCESS_URL, TIKTOK_*, AZLIVE_PUBLIC_ORDER_BASE_URL,
+      # AZLIVE_PUBLIC_BASE_URL, CSRF_TRUSTED_ORIGINS, CORS_ALLOWED_ORIGINS
