@@ -203,6 +203,16 @@ if _cors_origins.strip():
 else:
     CORS_ALLOW_ALL_ORIGINS = True
 
+# Autorise les déploiements Preview Vercel (URL change à chaque deploy).
+# Surcharge possible via CORS_ALLOWED_ORIGIN_REGEXES (regex séparées par des virgules).
+_cors_regexes = os.environ.get(
+    'CORS_ALLOWED_ORIGIN_REGEXES',
+    r'^https://az-live-front([.-][\w-]+)?\.vercel\.app$',
+)
+CORS_ALLOWED_ORIGIN_REGEXES = [
+    pattern.strip() for pattern in _cors_regexes.split(',') if pattern.strip()
+]
+
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
 
