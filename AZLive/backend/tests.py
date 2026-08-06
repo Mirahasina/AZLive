@@ -27,6 +27,19 @@ def create_test_produit(vendeur, **kwargs):
     return produit
 
 
+def authenticate_as_vendeur(test_client, vendeur, username=None):
+    """Lie un User + Token au vendeur et authentifie le client de test."""
+    username = username or f'vendeur_user_{vendeur.pk or id(vendeur)}'
+    user = vendeur.user
+    if user is None:
+        user = User.objects.create_user(username=username, password='password123')
+        vendeur.user = user
+        vendeur.save(update_fields=['user'])
+    token, _ = Token.objects.get_or_create(user=user)
+    test_client.defaults['HTTP_AUTHORIZATION'] = f'Token {token.key}'
+    return user, token
+
+
 class BackendModelsTest(TestCase):
     def test_create_produit_client_commande(self):
         vendeur = Vendeur.objects.create(nom='Vendeur Live', contact='0341234567')
@@ -68,6 +81,7 @@ class BackendAPITest(TestCase):
         self.vendeur = Vendeur.objects.create(nom='Vendeur Live', contact='0341234567')
         self.produit = create_test_produit(self.vendeur)
         self.variante = self.produit.variantes.first()
+        authenticate_as_vendeur(self.client, self.vendeur, username='backend_api_vendeur')
 
     def test_jp_capture_endpoint_creates_commande(self):
         payload = {
@@ -177,6 +191,7 @@ class BackendGapsAPITest(TestCase):
             },
         )
         self.variante = self.produit.variantes.first()
+        authenticate_as_vendeur(self.client, self.vendeur, username='vendeur_test')
 
     def test_stock_lifecycle_on_confirmation(self):
         client = Client.objects.create(nom='Sahondra', telephone='0345556667', adresse='Tana')
@@ -293,9 +308,12 @@ class BackendGapsAPITest(TestCase):
         self.assertEqual(data['chiffre_affaires'], 60000.00)
         self.assertEqual(data['montant_a_reverser'], 54000.00)
 
-    def test_dashboard_requires_vendeur_id(self):
-        response = self.client.get('/api/dashboard/stats/')
-        self.assertEqual(response.status_code, 403)
+    def test_dashboard_requires_authentication(self):
+        from django.test import Client as DjangoClient
+
+        anon = DjangoClient()
+        response = anon.get('/api/dashboard/stats/')
+        self.assertIn(response.status_code, (401, 403))
 
     def test_client_serializer_exposes_social_ids(self):
         payload = {
@@ -424,7 +442,7 @@ class BackendGapsAPITest(TestCase):
         }, content_type='application/json')
         self.assertEqual(response_b.status_code, 201)
         self.assertEqual(response_b.json()['commande']['ordre_jp'], 2)
-        self.assertIn("liste d'attente", response_b.json()['message_envoye'])
+        self.assertIn('JP-nao', response_b.json()['message_envoye'])
 
         response_c = self.client.post('/api/jp-capture/', {
             'comment_text': f"JP {self.produit.nom}",
@@ -446,6 +464,7 @@ class FacebookOAuthAPITest(TestCase):
     def setUp(self):
         self.user = User.objects.create_user(username='vendeur_fb', password='password123')
         self.vendeur = Vendeur.objects.create(user=self.user, nom='Vendeur FB', contact='0340000000')
+        authenticate_as_vendeur(self.client, self.vendeur, username='vendeur_fb')
 
     def test_facebook_login_url_not_configured(self):
         response = self.client.get('/api/auth/facebook/login/')
@@ -698,6 +717,7 @@ class LiveDiffusionTest(TestCase):
             vendeur=self.vendeur,
             pages_facebook=['AZLive Fashion'],
         )
+        authenticate_as_vendeur(self.client, self.vendeur, username='live_diffusion_vendeur')
 
     def test_demarrer_live_starts_all_platforms(self):
         response = self.client.post(f'/api/lives/{self.live.id}/demarrer/')
@@ -851,6 +871,7 @@ class TikToolLiveTest(TestCase):
             vendeur=self.vendeur,
             statut=Live.STATUT_EN_COURS,
         )
+        authenticate_as_vendeur(self.client, self.vendeur, username='tiktool_live_vendeur')
 
     def test_resolve_vendeur_from_tiktok_username(self):
         vendeur = resolve_vendeur_from_tiktok_username('maboutique')
@@ -995,6 +1016,7 @@ class OrderConfirmationFlowTest(TestCase):
             live=self.live,
             ordre_jp=1,
         )
+        authenticate_as_vendeur(self.client, self.vendeur, username='order_confirm_vendeur')
 
     def test_parse_confirmation_text(self):
         from .order_confirmation import parse_confirmation_text
@@ -1133,6 +1155,7 @@ class QuantiteEtAnnulationTest(TestCase):
             'taille': 'M', 'couleur': 'Noire', 'prix_unitaire': '45000.00', 'stock': 10, 'code_jp': 'JPNOIR',
         })
         self.variante = self.produit.variantes.first()
+        authenticate_as_vendeur(self.client, self.vendeur, username='qty_annul_vendeur')
 
     def _capture(self, comment_text, sender_id='tt_qty', sender_name='Acheteur'):
         from .jp_capture import process_social_comment
@@ -1500,6 +1523,7 @@ class LiveCodesEndpointTest(TestCase):
         self.var_a = self.produit_a.variantes.first()
         self.var_b = self.produit_b.variantes.first()
         self.live = Live.objects.create(titre='Live', vendeur=self.vendeur)
+        authenticate_as_vendeur(self.client, self.vendeur, username='live_codes_vendeur')
 
     def _post_codes(self, live_id, codes):
         return self.client.post(

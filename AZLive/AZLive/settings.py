@@ -223,9 +223,11 @@ REST_FRAMEWORK = {
         'rest_framework.authentication.TokenAuthentication',
         'rest_framework.authentication.SessionAuthentication',
     ],
-    # W1 — Sécurité par défaut : lecture publique, écriture authentifiée
+    # Écritures et lectures métier : authentification obligatoire.
+    # Les endpoints publics (OAuth, webhooks, formulaire /commander, PDF partagés)
+    # déclarent explicitement AllowAny.
     'DEFAULT_PERMISSION_CLASSES': [
-        'rest_framework.permissions.IsAuthenticatedOrReadOnly',
+        'rest_framework.permissions.IsAuthenticated',
     ],
     # W2 — Pagination par défaut sur toutes les listes
     'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',

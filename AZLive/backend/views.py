@@ -11,6 +11,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from rest_framework.permissions import IsAuthenticated, AllowAny
+from .permissions import IsAuthenticatedOrCronSecret
 
 from .ai import JPCommentAnalyzer
 from .message_humanizer import emoji, greeting, pick
@@ -149,7 +150,7 @@ class CommandeDetailView(generics.RetrieveUpdateDestroyAPIView):
 
 
 class JPCaptureAPIView(APIView):
-    permission_classes = [AllowAny]  # MVP — accessible sans token
+    permission_classes = [IsAuthenticated]
 
     def post(self, request):
         comment_text = request.data.get('comment_text', '')
@@ -264,7 +265,7 @@ def _create_jp_commande(client, produit, live=None):
 
 
 class JPAnalyseAPIView(APIView):
-    permission_classes = [AllowAny]  # MVP — accessible sans token
+    permission_classes = [IsAuthenticated]
 
     def post(self, request):
         comment_text = request.data.get('comment_text', '')
@@ -276,7 +277,7 @@ class JPAnalyseAPIView(APIView):
 
 
 class LivraisonTrackingAPIView(APIView):
-    permission_classes = [AllowAny]  # MVP — accessible sans token
+    permission_classes = [IsAuthenticated]
 
     def get(self, request):
         commande_id = request.query_params.get('commande_id')
@@ -291,7 +292,7 @@ class LivraisonTrackingAPIView(APIView):
 
 
 class TicketAPIView(APIView):
-    permission_classes = [AllowAny]  # MVP — accessible sans token
+    permission_classes = [IsAuthenticated]
 
     def get(self, request, commande_id):
         commande = get_object_or_404(
@@ -340,7 +341,7 @@ class TicketAPIView(APIView):
 
 class CommandeSearchAPIView(generics.ListAPIView):
     serializer_class = CommandeSerializer
-    permission_classes = [AllowAny]  # MVP — accessible sans token
+    permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
         query = self.request.query_params.get('q', '').strip()
@@ -365,7 +366,7 @@ class CommandeSearchAPIView(generics.ListAPIView):
 
 class JPRelanceAPIView(APIView):
     MAX_RELANCES = 3
-    permission_classes = [AllowAny]  # MVP — déclenché par le planificateur Cron sans token
+    permission_classes = [IsAuthenticatedOrCronSecret]
 
     def post(self, request):
         force = request.data.get('force', False) or request.query_params.get('force', 'false').lower() == 'true'
@@ -408,7 +409,7 @@ class JPRelanceAPIView(APIView):
 
 class CommandeUploadPaiementAPIView(APIView):
     parser_classes = [MultiPartParser, FormParser]
-    permission_classes = [AllowAny]  # MVP — accessible sans token
+    permission_classes = [IsAuthenticated]
 
     def post(self, request, pk):
         commande = get_object_or_404(Commande, pk=pk)
@@ -447,7 +448,7 @@ class CommandeUploadPaiementAPIView(APIView):
 
 
 class CommandeEtiquetteJPAPIView(APIView):
-    permission_classes = [AllowAny]  # MVP — accessible sans token
+    permission_classes = [IsAuthenticated]
 
     def get(self, request, pk):
         commande = get_object_or_404(Commande.objects.select_related('produit', 'variante'), pk=pk)
@@ -485,7 +486,7 @@ class CommandeEtiquetteJPAPIView(APIView):
 
 
 class CommandeFacturePDFView(APIView):
-    permission_classes = [AllowAny]
+    permission_classes = [AllowAny]  # liens partagés dans les messages clients
 
     def get(self, request, pk):
         commande = get_object_or_404(
@@ -497,7 +498,7 @@ class CommandeFacturePDFView(APIView):
 
 
 class CommandeEtiquetteLivraisonPDFView(APIView):
-    permission_classes = [AllowAny]
+    permission_classes = [AllowAny]  # liens partagés dans les messages clients
 
     def get(self, request, pk):
         commande = get_object_or_404(
@@ -509,7 +510,7 @@ class CommandeEtiquetteLivraisonPDFView(APIView):
 
 
 class CommandeConfirmerAPIView(APIView):
-    permission_classes = [AllowAny]
+    permission_classes = [IsAuthenticated]
     parser_classes = [JSONParser, FormParser]
 
     def post(self, request, pk):
@@ -563,7 +564,7 @@ class CommandeConfirmerAPIView(APIView):
 
 
 class CommandeLancerLivraisonAPIView(APIView):
-    permission_classes = [AllowAny]  # MVP — accessible sans token
+    permission_classes = [IsAuthenticated]
 
     def post(self, request, pk):
         commande = get_object_or_404(Commande.objects.select_related('client', 'produit__vendeur'), pk=pk)
@@ -615,32 +616,28 @@ class CommandeLancerLivraisonAPIView(APIView):
 
 
 class DashboardStatsAPIView(APIView):
+    permission_classes = [IsAuthenticated]
+
     def get(self, request):
         vendeur_id = request.query_params.get('vendeur_id')
         commandes_query = Commande.objects.select_related('produit', 'variante').all()
         lives_query = Live.objects.all()
         products_query = Produit.objects.prefetch_related('variantes').all()
 
-        if request.user.is_authenticated:
-            try:
-                vendeur = request.user.vendeur
-                commandes_query = commandes_query.filter(produit__vendeur=vendeur)
-                lives_query = lives_query.filter(vendeur=vendeur)
-                products_query = products_query.filter(vendeur=vendeur)
-            except Vendeur.DoesNotExist:
-                if vendeur_id:
-                    commandes_query = commandes_query.filter(produit__vendeur_id=vendeur_id)
-                    lives_query = lives_query.filter(vendeur_id=vendeur_id)
-                    products_query = products_query.filter(vendeur_id=vendeur_id)
-        elif vendeur_id:
+        try:
+            vendeur = request.user.vendeur
+            commandes_query = commandes_query.filter(produit__vendeur=vendeur)
+            lives_query = lives_query.filter(vendeur=vendeur)
+            products_query = products_query.filter(vendeur=vendeur)
+        except Vendeur.DoesNotExist:
+            if not vendeur_id:
+                return Response(
+                    {'detail': 'Aucun vendeur associé à cet utilisateur.'},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
             commandes_query = commandes_query.filter(produit__vendeur_id=vendeur_id)
             lives_query = lives_query.filter(vendeur_id=vendeur_id)
             products_query = products_query.filter(vendeur_id=vendeur_id)
-        else:
-            return Response(
-                {'detail': 'Authentification ou paramètre vendeur_id requis pour accéder aux statistiques.'},
-                status=status.HTTP_403_FORBIDDEN
-            )
 
         total_jps = commandes_query.count()
 
@@ -727,13 +724,13 @@ class DashboardStatsAPIView(APIView):
 class LiveListCreateView(generics.ListCreateAPIView):
     queryset = Live.objects.all().order_by('-date_live')
     serializer_class = LiveSerializer
-    permission_classes = [AllowAny]
+    permission_classes = [IsAuthenticated]
 
 
 class LiveDetailView(generics.RetrieveUpdateDestroyAPIView):
     queryset = Live.objects.all()
     serializer_class = LiveSerializer
-    permission_classes = [AllowAny]
+    permission_classes = [IsAuthenticated]
 
     def perform_update(self, serializer):
         old_statut = serializer.instance.statut
@@ -754,7 +751,7 @@ class LiveCodesAPIView(APIView):
            live mais reutilisables d'un live a l'autre (sans ecraser les autres lives).
            Un code vide supprime la correspondance de la variante pour ce live.
     """
-    permission_classes = [AllowAny]
+    permission_classes = [IsAuthenticated]
 
     def get(self, request, pk):
         live = get_object_or_404(Live, pk=pk)
@@ -822,19 +819,19 @@ class LiveCodesAPIView(APIView):
 class CollaborateurListCreateView(generics.ListCreateAPIView):
     queryset = Collaborateur.objects.all().order_by('nom')
     serializer_class = CollaborateurSerializer
-    permission_classes = [AllowAny]
+    permission_classes = [IsAuthenticated]
 
 
 class CollaborateurDetailView(generics.RetrieveUpdateDestroyAPIView):
     queryset = Collaborateur.objects.all()
     serializer_class = CollaborateurSerializer
-    permission_classes = [AllowAny]
+    permission_classes = [IsAuthenticated]
 
 
 class VarianteListCreateView(generics.ListCreateAPIView):
     queryset = Variante.objects.select_related('produit').all()
     serializer_class = VarianteSerializer
-    permission_classes = [AllowAny]
+    permission_classes = [IsAuthenticated]
 
     def perform_create(self, serializer):
         serializer.save()
@@ -843,23 +840,23 @@ class VarianteListCreateView(generics.ListCreateAPIView):
 class VarianteDetailView(generics.RetrieveUpdateDestroyAPIView):
     queryset = Variante.objects.select_related('produit').all()
     serializer_class = VarianteSerializer
-    permission_classes = [AllowAny]
+    permission_classes = [IsAuthenticated]
 
 
 class ClientListCreateView(generics.ListCreateAPIView):
     queryset = Client.objects.all().order_by('nom')
     serializer_class = ClientSerializer
-    permission_classes = [AllowAny]
+    permission_classes = [IsAuthenticated]
 
 
 class ClientDetailView(generics.RetrieveUpdateDestroyAPIView):
     queryset = Client.objects.all()
     serializer_class = ClientSerializer
-    permission_classes = [AllowAny]
+    permission_classes = [IsAuthenticated]
 
 
 class ClientStatsAPIView(APIView):
-    permission_classes = [AllowAny]
+    permission_classes = [IsAuthenticated]
 
     def get(self, request):
         vendeur_id = request.query_params.get('vendeur_id')
@@ -882,9 +879,11 @@ class ClientStatsAPIView(APIView):
                 if vendeur_id:
                     commandes_query = commandes_query.filter(produit__vendeur_id=vendeur_id)
                     clients_query = Client.objects.filter(commandes__produit__vendeur_id=vendeur_id).distinct()
-        elif vendeur_id:
-            commandes_query = commandes_query.filter(produit__vendeur_id=vendeur_id)
-            clients_query = Client.objects.filter(commandes__produit__vendeur_id=vendeur_id).distinct()
+        else:
+            return Response(
+                {'detail': 'Authentification requise.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
 
         total_clients = clients_query.count()
         avg_order_price = (
@@ -909,7 +908,7 @@ class ClientStatsAPIView(APIView):
 
 
 class SocialConnectAPIView(APIView):
-    permission_classes = [AllowAny]
+    permission_classes = [IsAuthenticated]
 
     def post(self, request):
         vendeur_id = request.data.get('vendeur_id')
@@ -969,7 +968,7 @@ class SocialConnectAPIView(APIView):
 
 
 class SocialDisconnectAPIView(APIView):
-    permission_classes = [AllowAny]
+    permission_classes = [IsAuthenticated]
 
     def post(self, request):
         vendeur_id = request.data.get('vendeur_id')
@@ -999,7 +998,7 @@ class SocialDisconnectAPIView(APIView):
 
 
 class FacebookPagesAPIView(APIView):
-    permission_classes = [AllowAny]
+    permission_classes = [IsAuthenticated]
 
     def get(self, request):
         vendeur_id = request.query_params.get('vendeur_id')
