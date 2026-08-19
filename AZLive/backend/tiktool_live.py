@@ -391,17 +391,38 @@ def _check_live_via_tiktok_page(unique_id: str) -> tuple[bool | None, str | None
         logger.info('Fallback page TikTok indisponible pour @%s: %s', normalized, exc)
         return None, None
 
+    # TikTok embed status: 2 = live, 4 = ended/offline.
+    status_match = re.search(r'"status"\s*:\s*(\d+)', html)
+    page_status = int(status_match.group(1)) if status_match else None
+
     room_patterns = [
         r'"roomId"\s*:\s*"(\d+)"',
         r'"room_id"\s*:\s*"?([0-9]+)"?',
         r"roomId[\"']?\s*[:=]\s*[\"']?(\d{15,})",
         r"liveRoomId[\"']?\s*[:=]\s*[\"']?(\d{15,})",
     ]
+    room_id = None
     for pattern in room_patterns:
         match = re.search(pattern, html)
         if match:
-            return True, str(match.group(1))
-    return None, None
+            room_id = str(match.group(1))
+            break
+
+    if room_id is None:
+        return None, None
+
+    if page_status == 2:
+        return True, room_id
+    if page_status is not None and page_status != 2:
+        logger.info(
+            'Page TikTok @%s : roomId=%s mais status=%s (pas en direct)',
+            normalized,
+            room_id,
+            page_status,
+        )
+        return False, room_id
+
+    return None, room_id
 
 
 def _extract_room_id_from_resolve(payload: dict[str, Any]) -> tuple[str | None, str]:
