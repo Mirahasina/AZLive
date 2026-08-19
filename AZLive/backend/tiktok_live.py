@@ -693,11 +693,35 @@ def sync_external_tiktok_lives(
 
 
 def kick_tiktok_live_detection(*, vendeur_id: int | None = None) -> dict[str, int]:
-    """Clôture les lives AZLive restés ouverts alors que TikTok est offline."""
+    """Détection + clôture : crée un live AZLive si TikTok est actif, clôture sinon."""
     if not tiktok_capture_configured():
         return {'started': 0, 'stopped': 0, 'skipped': 0}
+
+    started = 0
+    skipped = 0
+
+    for vendeur, unique_id in iter_connected_tiktok_vendeurs(vendeur_id=vendeur_id):
+        already = (
+            Live.objects.filter(vendeur=vendeur, statut=Live.STATUT_EN_COURS)
+            .order_by('-date_live')
+            .first()
+        )
+        if already is not None:
+            ensure_tiktok_listener(already)
+            started += 1
+            continue
+
+        is_live = check_streamer_is_live(unique_id, deep=True)
+        if is_live is True:
+            live = ensure_tiktok_live_for_streamer(unique_id, already_verified=True)
+            if live:
+                ensure_tiktok_listener(live)
+                started += 1
+        else:
+            skipped += 1
+
     stopped = reconcile_ended_tiktok_lives(min_interval_seconds=30.0, vendeur_id=vendeur_id)
-    return {'started': 0, 'stopped': stopped, 'skipped': 0}
+    return {'started': started, 'stopped': stopped, 'skipped': skipped}
 
 
 def recover_tiktok_listeners() -> int:
