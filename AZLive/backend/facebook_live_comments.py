@@ -237,13 +237,25 @@ def _select_target_broadcast(broadcasts: list[dict[str, Any]]) -> dict[str, Any]
     return None
 
 
+def live_should_capture_facebook_comments(live: Live) -> bool:
+    """True si ce live AZLive en cours doit poller les commentaires Facebook live."""
+    if live.statut != Live.STATUT_EN_COURS:
+        return False
+    if live.vendeur.is_demo_mode or not facebook_configured():
+        return False
+    broadcasts = list((live.diffusion_plateformes or {}).get('facebook') or [])
+    if not broadcasts:
+        return False
+    return _select_target_broadcast(broadcasts) is not None
+
+
 def start_facebook_comment_listener(
     live: Live,
     broadcasts: list[dict[str, Any]],
     pages: list[PageFacebook],
 ) -> bool:
     """Démarre le poller de commentaires pour le premier broadcast Facebook réel du live."""
-    if not facebook_configured() or live.vendeur.is_demo_mode:
+    if not live_should_capture_facebook_comments(live):
         return False
 
     target = _select_target_broadcast(broadcasts)
@@ -308,7 +320,7 @@ def listener_status(live_id: int) -> dict[str, Any]:
 
 def ensure_facebook_comment_listener(live: Live) -> bool:
     """Démarre le poller s'il est absent ou mort (ex. après reload Django)."""
-    if live.statut != Live.STATUT_EN_COURS or live.vendeur.is_demo_mode:
+    if not live_should_capture_facebook_comments(live):
         return False
     if listener_status(live.pk).get('running'):
         return True
@@ -322,23 +334,19 @@ def ensure_facebook_comment_listener(live: Live) -> bool:
 
 
 def recover_facebook_comment_listeners() -> int:
-    """Redémarre les pollers pour les lives encore « en cours » (ex. après reload runserver).
-
-    Les threads daemon ne survivent pas au redémarrage de Django : sans cet appel,
-    les commentaires Facebook ne sont plus lus tant qu'on ne redémarre pas le live.
-    """
+    """Relance les pollers pour les lives en cours avec diffusion Facebook (après reload serveur)."""
     from .facebook_live import resolve_live_pages
 
     restarted = 0
     lives = Live.objects.filter(statut=Live.STATUT_EN_COURS).select_related('vendeur')
     for live in lives:
+        if not live_should_capture_facebook_comments(live):
+            continue
         with _listeners_lock:
             existing = _listeners.get(live.pk)
             if existing and existing.is_alive():
                 continue
         broadcasts = list((live.diffusion_plateformes or {}).get('facebook') or [])
-        if not broadcasts:
-            continue
         pages = resolve_live_pages(live)
         if start_facebook_comment_listener(live, broadcasts, pages):
             restarted += 1

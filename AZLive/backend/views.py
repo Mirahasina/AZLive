@@ -130,9 +130,13 @@ class CommandeListCreateView(generics.ListCreateAPIView):
                 .first()
             )
             if live and not live.vendeur.is_demo_mode:
-                from .facebook_live_comments import ensure_facebook_comment_listener
+                from .facebook_live_comments import (
+                    ensure_facebook_comment_listener,
+                    live_should_capture_facebook_comments,
+                )
 
-                ensure_facebook_comment_listener(live)
+                if live_should_capture_facebook_comments(live):
+                    ensure_facebook_comment_listener(live)
         if client_id:
             queryset = queryset.filter(client_id=client_id)
         if produit_id:
@@ -733,11 +737,10 @@ class LiveListCreateView(generics.ListCreateAPIView):
         return queryset
 
     def list(self, request, *args, **kwargs):
-        # Chaque listage relance la détection TikTok (WS, ou REST si quota WS saturé)
-        # pour qu'un live lancé dans l'app apparaisse dans « Lives en cours ».
+        # Clôture éventuelle si TikTok est offline (sans démarrer de capture).
         vendeur_id = request.query_params.get('vendeur_id')
         try:
-            from .tiktool_live import kick_tiktok_live_detection
+            from .tiktok_live import kick_tiktok_live_detection
 
             kwargs_detect = {}
             if vendeur_id and str(vendeur_id).isdigit():

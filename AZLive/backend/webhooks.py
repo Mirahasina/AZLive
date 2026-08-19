@@ -14,7 +14,7 @@ from .facebook_webhooks import (
 )
 from .jp_capture import JPCaptureError, process_social_comment
 from .order_confirmation import OrderConfirmationError, process_inbound_private_message
-from .tiktool_live import process_tiktool_chat_event
+from .tiktok_live import process_tiktok_chat_event
 from .ai import JPCommentAnalyzer
 
 
@@ -67,11 +67,11 @@ class TikTokWebhookView(APIView):
             event_data = request.data.get('data') or {}
             if not streamer_unique_id:
                 return Response(
-                    {'detail': 'uniqueId ou streamer_unique_id requis pour un event TikTools chat.'},
+                    {'detail': 'uniqueId ou streamer_unique_id requis pour un event chat TikTok.'},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
             try:
-                result = process_tiktool_chat_event(str(streamer_unique_id), event_data)
+                result = process_tiktok_chat_event(str(streamer_unique_id), event_data)
                 status_code = 201 if result.get('status') != 'ignored' else status.HTTP_200_OK
                 return Response(result, status=status_code)
             except JPCaptureError as exc:

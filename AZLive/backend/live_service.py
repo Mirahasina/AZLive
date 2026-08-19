@@ -20,12 +20,12 @@ from .facebook_oauth import FacebookOAuthError, facebook_configured
 from .facebook_webhooks import subscribe_vendeur_pages
 from .mediamtx import MediaMTXError, mediamtx_enabled, provision_live_path, teardown_live_path
 from .models import Live, PageFacebook
-from .tiktool_live import (
+from .tiktok_live import (
     build_tiktok_diffusion,
-    ensure_tiktool_listener,
-    start_tiktool_listener,
-    stop_tiktool_listener,
-    tiktool_configured,
+    ensure_tiktok_listener,
+    start_tiktok_listener,
+    stop_tiktok_listener,
+    tiktok_capture_configured,
 )
 
 
@@ -126,16 +126,24 @@ def _ensure_tiktok_username(vendeur) -> None:
 @transaction.atomic
 def demarrer_live(live: Live) -> Live:
     if live.statut == Live.STATUT_EN_COURS and live.diffusion_plateformes:
-        # Un rechargement Django tue les threads : on relance les listeners.
+        from .facebook_live_comments import (
+            ensure_facebook_comment_listener,
+            live_should_capture_facebook_comments,
+            start_facebook_comment_listener,
+        )
+
         facebook_broadcasts = list((live.diffusion_plateformes or {}).get('facebook') or [])
-        if facebook_broadcasts and facebook_configured() and not live.vendeur.is_demo_mode:
+        if live_should_capture_facebook_comments(live):
             pages = resolve_live_pages(live)
             start_facebook_comment_listener(live, facebook_broadcasts, pages)
             _ensure_messenger_inbox_listeners(pages, demo=live.vendeur.is_demo_mode)
         elif facebook_broadcasts:
             ensure_facebook_comment_listener(live)
         if live.vendeur.tiktok_username and not live.vendeur.is_demo_mode:
-            ensure_tiktool_listener(live)
+            from .tiktok_live import ensure_tiktok_listener, live_should_capture_tiktok_comments
+
+            if live_should_capture_tiktok_comments(live):
+                ensure_tiktok_listener(live)
         return live
 
     _stop_other_active_lives(live.vendeur, exclude_live_id=live.pk)
@@ -190,8 +198,8 @@ def demarrer_live(live: Live) -> Live:
         ]
     )
 
-    if tiktok_broadcast and tiktool_configured() and not live.vendeur.is_demo_mode:
-        started = start_tiktool_listener(live)
+    if tiktok_broadcast and tiktok_capture_configured() and not live.vendeur.is_demo_mode:
+        started = start_tiktok_listener(live)
         if started:
             diffusion = dict(live.diffusion_plateformes or {})
             tiktok_state = dict(diffusion.get('tiktok') or {})
@@ -228,7 +236,7 @@ def arreter_live(live: Live, auto: bool = False) -> Live:
         teardown_live_path(webrtc['path'])
         diffusion['webrtc'] = {**webrtc, 'status': 'stopped', 'publish_token': None}
 
-    stop_tiktool_listener(live)
+    stop_tiktok_listener(live)
     stop_facebook_comment_listener(live)
 
     diffusion['facebook'] = facebook_broadcasts
