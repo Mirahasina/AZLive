@@ -733,18 +733,18 @@ class LiveListCreateView(generics.ListCreateAPIView):
         return queryset
 
     def list(self, request, *args, **kwargs):
-        # ?sync=1 → démarre uniquement les scouts WebSocket (0 REST = 0 quota API).
-        if str(request.query_params.get('sync') or '') in {'1', 'true', 'yes'}:
-            vendeur_id = request.query_params.get('vendeur_id')
-            try:
-                from .tiktool_live import ensure_tiktok_scouts
+        # Chaque listage relance la détection TikTok (WS, ou REST si quota WS saturé)
+        # pour qu'un live lancé dans l'app apparaisse dans « Lives en cours ».
+        vendeur_id = request.query_params.get('vendeur_id')
+        try:
+            from .tiktool_live import kick_tiktok_live_detection
 
-                kwargs_scouts = {}
-                if vendeur_id and str(vendeur_id).isdigit():
-                    kwargs_scouts['vendeur_id'] = int(vendeur_id)
-                ensure_tiktok_scouts(**kwargs_scouts)
-            except Exception:
-                pass
+            kwargs_detect = {}
+            if vendeur_id and str(vendeur_id).isdigit():
+                kwargs_detect['vendeur_id'] = int(vendeur_id)
+            kick_tiktok_live_detection(**kwargs_detect)
+        except Exception:
+            pass
         return super().list(request, *args, **kwargs)
 
 

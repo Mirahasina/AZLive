@@ -63,9 +63,12 @@ pytestdebug.log
 .DS_Store
 Thumbs.db
 
-# MediaMTX — binaire natif téléchargé localement (ne pas committer)
+# MediaMTX — binaires et archives téléchargés localement
 mediamtx/mediamtx.exe
 mediamtx/*.zip
+mediamtx/ffmpeg/
+AZLive/mediamtx/ffmpeg/
+AZLive/mediamtx/ffmpeg-essentials.zip
 
 .ipynb_checkpoints/
 

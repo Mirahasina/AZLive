@@ -49,7 +49,14 @@ def _respond_or_redirect(request, payload, success_url_setting):
         return Response(payload, status=status.HTTP_200_OK)
 
     redirect_base = success_url_setting.rstrip('/')
-    query = urllib.parse.urlencode({'token': payload['token'], 'created': str(payload['created']).lower()})
+    params = {
+        'token': payload['token'],
+        'created': str(payload['created']).lower(),
+    }
+    state = request.query_params.get('state')
+    if state:
+        params['state'] = state
+    query = urllib.parse.urlencode(params)
     return HttpResponseRedirect(f'{redirect_base}?{query}')
 
 

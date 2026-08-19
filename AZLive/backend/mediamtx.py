@@ -13,6 +13,7 @@ import secrets
 import urllib.error
 import urllib.parse
 import urllib.request
+from pathlib import Path
 from typing import Any
 
 from django.conf import settings
@@ -55,6 +56,32 @@ def _api_request(path: str, method: str = 'GET', payload: dict | None = None) ->
         raise MediaMTXError(f'MediaMTX injoignable: {exc.reason}', status_code=503) from exc
 
 
+def _ffmpeg_bin() -> str:
+    """Chemin ffmpeg pour MediaMTX.
+
+    MediaMTX réinterprète les antislash Windows dans runOnReady : on force
+    des slashes POSIX (acceptés par CreateProcess) pour que le binaire soit trouvé.
+    """
+    configured = (getattr(settings, 'MEDIAMTX_FFMPEG_PATH', '') or '').strip().strip('"')
+    mediamtx_dir = Path(__file__).resolve().parent.parent / 'mediamtx'
+    candidates = []
+    if configured:
+        candidates.append(Path(configured))
+    candidates.extend(
+        [
+            mediamtx_dir / 'ffmpeg' / 'bin' / 'ffmpeg.exe',
+            mediamtx_dir / 'ffmpeg.exe',
+        ]
+    )
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate.resolve().as_posix()
+    nested = next(mediamtx_dir.glob('ffmpeg/**/ffmpeg.exe'), None)
+    if nested and nested.is_file():
+        return nested.resolve().as_posix()
+    return 'ffmpeg'
+
+
 def _build_relay_command(secure_stream_url: str) -> str:
     """Commande ffmpeg lancée par MediaMTX (runOnReady) pour relayer vers Facebook.
 
@@ -64,15 +91,17 @@ def _build_relay_command(secure_stream_url: str) -> str:
     rtsp_host = settings.MEDIAMTX_RTSP_HOST
     bitrate = settings.MEDIAMTX_FFMPEG_VIDEO_BITRATE
     preset = settings.MEDIAMTX_FFMPEG_PRESET
-    # Le secure_stream_url est entre guillemets simples pour neutraliser ? et & de la query.
-    safe_url = secure_stream_url.replace("'", "")
+    # Pas de quotes shell : MediaMTX fait un exec direct (pas cmd.exe).
+    # L'URL RTMPS n'a pas d'espaces ; & et ? restent dans un seul argument.
+    safe_url = secure_stream_url.replace("'", '').replace('"', '')
+    ffmpeg = _ffmpeg_bin()
     return (
-        f'ffmpeg -hide_banner -loglevel warning '
+        f'{ffmpeg} -hide_banner -loglevel warning '
         f'-rtsp_transport tcp -i rtsp://{rtsp_host}/$MTX_PATH '
         f'-c:v libx264 -preset {preset} -pix_fmt yuv420p '
         f'-b:v {bitrate} -maxrate {bitrate} -bufsize {bitrate} -g 60 '
         f'-c:a aac -b:a 128k -ar 44100 '
-        f"-f flv '{safe_url}'"
+        f'-f flv {safe_url}'
     )
 
 

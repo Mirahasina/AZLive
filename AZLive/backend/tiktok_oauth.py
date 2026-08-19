@@ -130,12 +130,21 @@ def exchange_code_for_tokens(
 
 
 def get_user_profile(access_token: str) -> dict[str, Any]:
-    # username requiert user.info.profile — on ne demande que user.info.basic ici
-    payload = _tiktok_request(
-        TIKTOK_USER_INFO_URL,
-        {'fields': 'open_id,union_id,avatar_url,display_name'},
-        bearer_token=access_token,
-    )
+    # username requiert user.info.profile ; on le demande, avec repli si le scope manque.
+    fields_with_username = 'open_id,union_id,avatar_url,display_name,username'
+    fields_basic = 'open_id,union_id,avatar_url,display_name'
+    try:
+        payload = _tiktok_request(
+            TIKTOK_USER_INFO_URL,
+            {'fields': fields_with_username},
+            bearer_token=access_token,
+        )
+    except TikTokOAuthError:
+        payload = _tiktok_request(
+            TIKTOK_USER_INFO_URL,
+            {'fields': fields_basic},
+            bearer_token=access_token,
+        )
     error = payload.get('error') or {}
     if error.get('code') not in (None, '', 'ok'):
         raise TikTokOAuthError(error.get('message') or 'Profil TikTok inaccessible.')
@@ -170,8 +179,13 @@ def get_or_create_vendeur_from_tiktok(profile: dict[str, Any], token_payload: di
         existing.tiktok_refresh_token = refresh_token
         update_fields = ['tiktok_access_token', 'tiktok_refresh_token']
         if tiktok_username and _is_valid_handle(tiktok_username):
-            existing.tiktok_username = tiktok_username
-            update_fields.append('tiktok_username')
+            existing_handle = normalize_tiktok_username(existing.tiktok_username)
+            new_handle = normalize_tiktok_username(tiktok_username)
+            # Ne pas écraser le @ du compte qui diffuse (lives précédents) par
+            # le username OAuth d'un autre compte du même login.
+            if not existing_handle or existing_handle == new_handle:
+                existing.tiktok_username = tiktok_username
+                update_fields.append('tiktok_username')
         if display_name and existing.nom != display_name:
             existing.nom = display_name
             update_fields.append('nom')

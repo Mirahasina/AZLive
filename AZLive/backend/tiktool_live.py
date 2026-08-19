@@ -30,7 +30,10 @@ TIKTOOL_ROOM_ID_URL = 'https://api.tik.tools/webcast/room_id'
 TIKTOOL_ROOM_INFO_URL = 'https://api.tik.tools/webcast/room_info'
 
 # Codes TikTools = fin de live explicite (doc v3.2).
-_WS_STREAM_END_CODES = {4005, 4006, 4555, 4404}
+# 4404 = « Creator is not currently live » : ce n'est PAS une fin de session
+# (TikTools l'envoie aussi à la connexion tant que le live n'est pas indexé).
+_WS_STREAM_END_CODES = {4005, 4006, 4555}
+_AUTO_LIVE_TITLE = re.compile(r'Live - TikTok - ([a-z0-9._-]+) - ', re.I)
 
 # Signaux d'activité pendant un live (viewers, chat, gifts…).
 _LIVE_ACTIVITY_EVENTS = frozenset({
@@ -60,6 +63,7 @@ _rate_limited_until: datetime | None = None
 _rate_limit_lock = threading.Lock()
 _ws_rate_limited_until: datetime | None = None
 _ws_rate_limit_lock = threading.Lock()
+_ensure_live_lock = threading.Lock()
 
 
 def tiktool_configured() -> bool:
@@ -88,18 +92,42 @@ def _tiktool_is_rate_limited() -> bool:
         return True
 
 
+def _is_tiktool_ws_quota_error(text: str) -> bool:
+    lowered = (text or '').lower()
+    return (
+        '4429' in lowered
+        or 'rate limit' in lowered
+        or 'daily demo limit' in lowered
+        or '50 ws sessions' in lowered
+        or 'upgrade required' in lowered
+    )
+
+
+def _is_tiktok_offline_signal(text: str) -> bool:
+    """TikTools indique que le créateur n'est plus en direct."""
+    lowered = (text or '').lower()
+    return 'not currently live' in lowered or 'creator is not' in lowered
+
+
+def _stop_all_tiktok_scouts() -> None:
+    with _listeners_lock:
+        for scout in list(_scouts.values()):
+            scout.stop_event.set()
+
+
 def _mark_ws_rate_limited(seconds: float = 3600.0) -> None:
-    """Sandbox TikTools : 60 connexions WS / heure. Pause longue après 4429."""
+    """Sandbox TikTools : pause WS après 4429 / limite quotidienne Community."""
     global _ws_rate_limited_until
     until = timezone.now() + timedelta(seconds=max(seconds, 300.0))
     with _ws_rate_limit_lock:
         if _ws_rate_limited_until is None or until > _ws_rate_limited_until:
             _ws_rate_limited_until = until
             logger.warning(
-                'TikTools WebSocket quota (4429) : pause jusqu’à %s '
-                '(sandbox ≈ 60 connexions/heure — ne pas reconnecter en boucle)',
+                'TikTools WebSocket quota saturé : pause jusqu’à %s '
+                '(ne pas reconnecter en boucle)',
                 _ws_rate_limited_until.isoformat(),
             )
+    _stop_all_tiktok_scouts()
 
 
 def _tiktool_ws_is_rate_limited() -> bool:
@@ -122,38 +150,61 @@ def _is_valid_unique_id(unique_id: str) -> bool:
     return bool(re.fullmatch(r'[a-z0-9._-]+', unique_id or ''))
 
 
+def _try_fill_tiktok_username(vendeur: Vendeur) -> None:
+    """Complète tiktok_username via l'API TikTok si l'OAuth n'a renvoyé que l'open_id."""
+    if vendeur.tiktok_username or not getattr(vendeur, 'tiktok_access_token', None):
+        return
+    from .tiktok_oauth import TikTokOAuthError, get_user_profile
+
+    try:
+        profile = get_user_profile(vendeur.tiktok_access_token)
+    except TikTokOAuthError:
+        return
+    handle = normalize_tiktok_username(profile.get('username') or '')
+    if not _is_valid_unique_id(handle):
+        return
+    vendeur.tiktok_username = f'@{handle}'
+    vendeur.save(update_fields=['tiktok_username'])
+    logger.info('Vendeur #%s : tiktok_username récupéré via OAuth → @%s', vendeur.pk, handle)
+
+
+def _unique_ids_from_recent_lives(vendeur: Vendeur) -> list[str]:
+    """Handles réellement utilisés en live (titre auto + diffusion), les plus récents d'abord."""
+    found: list[str] = []
+
+    def _add(raw: str | None) -> None:
+        handle = normalize_tiktok_username(raw)
+        if _is_valid_unique_id(handle) and handle not in found:
+            found.append(handle)
+
+    recent = (
+        Live.objects.filter(vendeur=vendeur)
+        .order_by('-date_live', '-id')[:20]
+    )
+    for live in recent:
+        match = _AUTO_LIVE_TITLE.search(live.titre or '')
+        if match:
+            _add(match.group(1))
+        tiktok = dict((live.diffusion_plateformes or {}).get('tiktok') or {})
+        _add(tiktok.get('unique_id'))
+        _add(tiktok.get('username'))
+    return found
+
+
 def resolve_vendeur_tiktok_unique_id(vendeur: Vendeur) -> str | None:
     """Retourne le @TikTok utilisable pour détecter un live (compte connecté).
 
     Priorité :
-    1. `tiktok_username` s'il est un unique_id valide (ex. azplus.mg)
-    2. Dernier `unique_id` connu dans diffusion_plateformes d'un live de ce vendeur
+    1. Dernier unique_id réellement vu sur un live AZLive (compte qui diffuse)
+    2. `tiktok_username` OAuth s'il est un unique_id valide
     """
+    from_lives = _unique_ids_from_recent_lives(vendeur)
+    if from_lives:
+        return from_lives[0]
+
     candidate = normalize_tiktok_username(vendeur.tiktok_username)
     if _is_valid_unique_id(candidate):
         return candidate
-
-    recent = (
-        Live.objects.filter(vendeur=vendeur)
-        .exclude(diffusion_plateformes__isnull=True)
-        .order_by('-date_live', '-id')[:20]
-    )
-    for live in recent:
-        tiktok = dict((live.diffusion_plateformes or {}).get('tiktok') or {})
-        for key in ('unique_id', 'username'):
-            found = normalize_tiktok_username(str(tiktok.get(key) or ''))
-            if _is_valid_unique_id(found):
-                # Répare le profil vendeur pour les prochains cycles.
-                if vendeur.tiktok_username != found:
-                    vendeur.tiktok_username = found
-                    vendeur.save(update_fields=['tiktok_username'])
-                    logger.info(
-                        'Vendeur #%s : tiktok_username réparé → @%s (depuis live #%s)',
-                        vendeur.pk,
-                        found,
-                        live.pk,
-                    )
-                return found
     return None
 
 
@@ -168,8 +219,18 @@ def iter_connected_tiktok_vendeurs(*, vendeur_id: int | None = None):
     if vendeur_id is not None:
         qs = qs.filter(pk=vendeur_id)
     for vendeur in qs:
-        unique_id = resolve_vendeur_tiktok_unique_id(vendeur)
-        if unique_id:
+        unique_ids = _unique_ids_from_recent_lives(vendeur)
+        if not unique_ids:
+            oauth_handle = normalize_tiktok_username(vendeur.tiktok_username)
+            if _is_valid_unique_id(oauth_handle):
+                unique_ids.append(oauth_handle)
+        if not unique_ids:
+            _try_fill_tiktok_username(vendeur)
+            unique_ids = _unique_ids_from_recent_lives(vendeur)
+            oauth_handle = normalize_tiktok_username(vendeur.tiktok_username)
+            if _is_valid_unique_id(oauth_handle) and oauth_handle not in unique_ids:
+                unique_ids.append(oauth_handle)
+        for unique_id in unique_ids[:1]:
             yield vendeur, unique_id
 
 
@@ -300,6 +361,49 @@ def _check_live_via_room_info(unique_id: str) -> tuple[bool | None, str | None]:
     return None, room_id
 
 
+def _check_live_via_tiktok_page(unique_id: str) -> tuple[bool | None, str | None]:
+    """Fallback local: lit la page `/@user/live` et extrait un roomId réel.
+
+    Utilisé quand TikTools WS est en quota et que les endpoints REST retournent
+    un faux négatif/stale. Sur la machine locale Windows, cette page répond
+    généralement mieux que le relay distant.
+    """
+    normalized = normalize_tiktok_username(unique_id)
+    if not _is_valid_unique_id(normalized):
+        return None, None
+
+    url = f'https://www.tiktok.com/@{normalized}/live'
+    request = urllib.request.Request(
+        url,
+        headers={
+            'User-Agent': (
+                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+                'AppleWebKit/537.36 (KHTML, like Gecko) '
+                'Chrome/131.0.0.0 Safari/537.36'
+            ),
+            'Accept-Language': 'en-US,en;q=0.9',
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=15) as response:
+            html = response.read().decode('utf-8', errors='replace')
+    except Exception as exc:  # noqa: BLE001
+        logger.info('Fallback page TikTok indisponible pour @%s: %s', normalized, exc)
+        return None, None
+
+    room_patterns = [
+        r'"roomId"\s*:\s*"(\d+)"',
+        r'"room_id"\s*:\s*"?([0-9]+)"?',
+        r"roomId[\"']?\s*[:=]\s*[\"']?(\d{15,})",
+        r"liveRoomId[\"']?\s*[:=]\s*[\"']?(\d{15,})",
+    ]
+    for pattern in room_patterns:
+        match = re.search(pattern, html)
+        if match:
+            return True, str(match.group(1))
+    return None, None
+
+
 def _extract_room_id_from_resolve(payload: dict[str, Any]) -> tuple[str | None, str]:
     """Ancien scrape HTML TikTok — désactivé (WAF Slardar bloqué depuis un serveur).
 
@@ -374,7 +478,7 @@ def check_streamer_is_live(unique_id: str, *, deep: bool = False) -> bool | None
 
     Jamais de scrape HTML. Si indéterminé → les scouts WebSocket créent le live.
     """
-    if not tiktool_configured() or _tiktool_is_rate_limited():
+    if not tiktool_configured():
         return None
     normalized = normalize_tiktok_username(unique_id)
     if not _is_valid_unique_id(normalized):
@@ -385,8 +489,25 @@ def check_streamer_is_live(unique_id: str, *, deep: bool = False) -> bool | None
         return None
 
     if deep:
-        room_hint, _fresh = _check_live_via_room_id(normalized)
+        if _tiktool_is_rate_limited():
+            page_hint, _page_room_id = _check_live_via_tiktok_page(normalized)
+            return page_hint
+        room_hint, room_id = _check_live_via_room_id(normalized)
+        if room_hint is True:
+            return True
+        page_hint, page_room_id = _check_live_via_tiktok_page(normalized)
+        if page_hint is True:
+            logger.info(
+                'Fallback page TikTok @%s confirme le live (room_id=%s, tiktools_room_id=%s)',
+                normalized,
+                page_room_id,
+                room_id,
+            )
+            return True
         return room_hint
+
+    if _tiktool_is_rate_limited():
+        return None
 
     status_hint, _room_id = _check_live_via_live_status(normalized)
     if status_hint is True:
@@ -397,22 +518,21 @@ def check_streamer_is_live(unique_id: str, *, deep: bool = False) -> bool | None
 
 def build_tiktok_diffusion(live: Live) -> dict[str, Any] | None:
     username = live.vendeur.tiktok_username
-    if not username:
+    unique_id = normalize_tiktok_username(username)
+    if not unique_id and not live.vendeur.tiktok_open_id:
         return None
 
-    unique_id = normalize_tiktok_username(username)
-    # Pas d'appel TikTools ici : le démarrage live + scouts WS suffisent.
     return {
         'username': username,
-        'unique_id': unique_id,
+        'unique_id': unique_id or None,
         'status': 'PENDING_MANUAL',
         'is_live_on_tiktok': None,
         'tiktool_listener': tiktool_configured(),
         'demo': False,
         'instructions': (
-            'Lancez le live sur TikTok (app ou Live Center). '
-            'Les commentaires JP seront capturés automatiquement via TikTools '
-            'et une réponse avec le lien formulaire sera publiée dans le chat live.'
+            'Lancez le live dans l’application TikTok. '
+            'AZLive capture les commentaires JP automatiquement '
+            'et n’envoie pas la caméra vers TikTok.'
         ),
     }
 
@@ -595,13 +715,69 @@ def ensure_tiktok_live_for_streamer(
             return existing
 
     now = timezone.now()
+    with _ensure_live_lock:
+        live = (
+            Live.objects.filter(vendeur=vendeur, statut=Live.STATUT_EN_COURS)
+            .order_by('-date_live')
+            .first()
+        )
+        if live is None:
+            recent_cutoff = now - timedelta(minutes=15)
+            live = (
+                Live.objects.filter(vendeur=vendeur, date_debut__gte=recent_cutoff)
+                .order_by('-date_debut', '-id')
+                .first()
+            )
+            if live and live.statut != Live.STATUT_EN_COURS:
+                live.statut = Live.STATUT_EN_COURS
+                live.date_fin = None
+                live.date_live = now
+                live.date_debut = live.date_debut or now
+                live.save(update_fields=['statut', 'date_fin', 'date_live', 'date_debut'])
 
-    live = (
-        Live.objects.filter(vendeur=vendeur, statut=Live.STATUT_EN_COURS)
-        .order_by('-date_live')
-        .first()
-    )
-    if live:
+        if live:
+            live = _upsert_tiktok_diffusion(
+                live,
+                unique_id=unique_id,
+                username=vendeur.tiktok_username,
+                status='LIVE',
+                is_live=True,
+            )
+            ensure_tiktool_listener(live)
+            try:
+                ensure_tiktok_confirmation_comment(live)
+            except Exception:
+                logger.exception('Confirmation link non généré pour live #%s', live.pk)
+            return live
+
+        # Réutilise en priorité un live planifié récent du vendeur (dressing déjà préparé).
+        window_start = now - timedelta(hours=24)
+        live = (
+            Live.objects.filter(
+                vendeur=vendeur,
+                statut=Live.STATUT_PLANIFIE,
+                date_live__gte=window_start,
+            )
+            .order_by('date_live')
+            .first()
+        )
+        auto_title = build_tiktok_live_title(unique_id, now)
+        if live is None:
+            live = Live.objects.create(
+                titre=auto_title,
+                vendeur=vendeur,
+                statut=Live.STATUT_EN_COURS,
+                date_live=now,
+                date_debut=now,
+            )
+        else:
+            live.titre = auto_title
+            live.statut = Live.STATUT_EN_COURS
+            live.date_debut = live.date_debut or now
+            live.date_live = now
+            live.date_fin = None
+            live.save(update_fields=['titre', 'statut', 'date_debut', 'date_live', 'date_fin'])
+
         live = _upsert_tiktok_diffusion(
             live,
             unique_id=unique_id,
@@ -609,55 +785,12 @@ def ensure_tiktok_live_for_streamer(
             status='LIVE',
             is_live=True,
         )
-        # Listener d'abord : la génération du lien ne doit pas bloquer la capture JP.
         ensure_tiktool_listener(live)
         try:
-            ensure_tiktok_confirmation_comment(live)
+            ensure_tiktok_confirmation_comment(live, force=True)
         except Exception:
             logger.exception('Confirmation link non généré pour live #%s', live.pk)
         return live
-
-    # Réutilise en priorité un live planifié récent du vendeur (dressing déjà préparé).
-    window_start = now - timedelta(hours=24)
-    live = (
-        Live.objects.filter(
-            vendeur=vendeur,
-            statut=Live.STATUT_PLANIFIE,
-            date_live__gte=window_start,
-        )
-        .order_by('date_live')
-        .first()
-    )
-    auto_title = build_tiktok_live_title(unique_id, now)
-    if live is None:
-        live = Live.objects.create(
-            titre=auto_title,
-            vendeur=vendeur,
-            statut=Live.STATUT_EN_COURS,
-            date_live=now,
-            date_debut=now,
-        )
-    else:
-        live.titre = auto_title
-        live.statut = Live.STATUT_EN_COURS
-        live.date_debut = live.date_debut or now
-        live.date_live = now
-        live.date_fin = None
-        live.save(update_fields=['titre', 'statut', 'date_debut', 'date_live', 'date_fin'])
-
-    live = _upsert_tiktok_diffusion(
-        live,
-        unique_id=unique_id,
-        username=vendeur.tiktok_username,
-        status='LIVE',
-        is_live=True,
-    )
-    ensure_tiktool_listener(live)
-    try:
-        ensure_tiktok_confirmation_comment(live, force=True)
-    except Exception:
-        logger.exception('Confirmation link non généré pour live #%s', live.pk)
-    return live
 
 
 def process_tiktool_chat_event(streamer_unique_id: str, event_data: dict[str, Any]) -> dict[str, Any]:
@@ -769,9 +902,9 @@ class _TikToolLiveListener(threading.Thread):
             elif self._last_close_code == 4429 or _tiktool_ws_is_rate_limited():
                 delay = max(self._reconnect_delay, tiktool_ws_rate_limit_remaining_seconds(), 600.0)
             else:
-                delay = self._reconnect_delay
-                self._reconnect_delay = min(self._reconnect_delay * 1.5, 90.0)
-                # Live AZLive encore ouvert → reconnecter vite pour vérifier / clôturer.
+                # « Creator is not currently live » / drop : poll lent, pas une boucle 8s.
+                delay = max(self._reconnect_delay, 20.0)
+                self._reconnect_delay = min(self._reconnect_delay * 1.5, 45.0)
                 try:
                     close_old_connections()
                     if _find_active_tiktok_live_for_streamer(self.unique_id):
@@ -848,14 +981,30 @@ class _TikToolLiveListener(threading.Thread):
                         self._note_activity()
                         self.live_id = active.pk
                         return
+                page_hint = None
+                page_room_id = None
+                if room_hint is not True:
+                    page_hint, page_room_id = _check_live_via_tiktok_page(self.unique_id)
+                    if page_hint is True:
+                        logger.info(
+                            'Reconnect @%s : page TikTok confirme encore le live '
+                            '(room_id=%s) → on garde AZLive #%s',
+                            self.unique_id,
+                            page_room_id,
+                            active.pk,
+                        )
+                        self._note_activity()
+                        self.live_id = active.pk
+                        return
 
                 if status_hint is False or room_hint is False:
                     logger.warning(
-                        'Reconnect @%s : pas d\'activité WS + offline (status=%s room=%s) '
+                        'Reconnect @%s : pas d\'activité WS + offline (status=%s room=%s page=%s) '
                         '→ clôture AZLive #%s',
                         self.unique_id,
                         status_hint,
                         room_hint,
+                        page_hint,
                         active.pk,
                     )
                     self.live_id = active.pk
@@ -1058,31 +1207,64 @@ class _TikToolLiveListener(threading.Thread):
 
     def _on_error(self, _ws, error):
         err_txt = str(error or '')
-        if '4429' in err_txt or 'rate limit' in err_txt.lower():
-            _mark_ws_rate_limited(3600.0)
+        if _is_tiktool_ws_quota_error(err_txt):
+            hours = 12.0 if 'daily' in err_txt.lower() or '24h' in err_txt.lower() else 1.0
+            _mark_ws_rate_limited(hours * 3600.0)
             self._last_close_code = 4429
+            self.stop_event.set()
+        elif _is_tiktok_offline_signal(err_txt):
+            close_old_connections()
+            active = None
+            if self.live_id or self._session_saw_live:
+                active = (
+                    Live.objects.filter(pk=self.live_id, statut=Live.STATUT_EN_COURS).first()
+                    if self.live_id
+                    else _find_active_tiktok_live_for_streamer(self.unique_id)
+                )
+            else:
+                active = _find_active_tiktok_live_for_streamer(self.unique_id)
+            if active:
+                self.live_id = active.pk
+                logger.info(
+                    'TikTok offline (@%s) — clôture AZLive live #%s',
+                    self.unique_id,
+                    active.pk,
+                )
+                self._end_live_from_ws_signal('tiktok_offline_ws')
         logger.warning('TikTools WebSocket error (@%s / live #%s): %s', self.unique_id, self.live_id, error)
 
     def _on_close(self, _ws, close_status_code, close_msg):
         self._last_close_code = close_status_code
         reason = str(close_msg or '')
-        if close_status_code == 4429 or 'rate limit' in reason.lower():
-            _mark_ws_rate_limited(3600.0)
+        if close_status_code == 4429 or _is_tiktool_ws_quota_error(reason):
+            hours = 12.0 if 'daily' in reason.lower() or '24h' in reason.lower() else 1.0
+            _mark_ws_rate_limited(hours * 3600.0)
+            self.stop_event.set()
 
-        # Uniquement les codes fin explicites TikTools — PAS 1006 (coupure réseau
-        # fréquente qui tuait la détection de début juste après roomInfo).
+        offline_now = _is_tiktok_offline_signal(reason)
+        has_active = bool(self.live_id or self._session_saw_live)
+        if offline_now and not has_active:
+            close_old_connections()
+            active = _find_active_tiktok_live_for_streamer(self.unique_id)
+            if active:
+                self.live_id = active.pk
+                has_active = True
+
         should_end = (
             close_status_code in _WS_STREAM_END_CODES
             or self._stream_end_event_seen
+            or (offline_now and has_active)
         )
 
         if should_end:
             close_old_connections()
-            self._end_live_from_ws_signal(f'ws_close_{close_status_code}')
+            if self._session_saw_live or self.live_id:
+                self._end_live_from_ws_signal(f'ws_close_{close_status_code or "offline"}')
         else:
             self._cancel_proof_timer()
-            # Sur drop réseau avec live encore ouvert : au prochain open,
-            # verify_still_live + 30s d'activité décidera de clôturer ou non.
+            if (self.live_id or self._session_saw_live) and not _is_tiktool_ws_quota_error(reason):
+                # Coupure réseau ou fin non signalée : vérif REST rapide.
+                self._schedule_verify_or_end(15.0)
 
         logger.info(
             'TikTools WebSocket fermé (@%s / live #%s): %s %s',
@@ -1341,8 +1523,9 @@ def cloturer_tiktok_lives_for_streamer(unique_id: str, *, reason: str = 'tiktok_
     for live in active:
         if not _live_is_tiktok_tracked(live):
             titre = (live.titre or '').lower()
-            if normalized not in titre and 'tiktok' not in titre:
+            if 'tiktok' not in titre and normalized not in titre:
                 continue
+        # Même vendeur OAuth : le @ stream (ex. azplus.mg) peut différer du @ scout OAuth.
         before = live.statut
         cloturer_tiktok_live(live, reason=reason)
         live.refresh_from_db(fields=['statut'])
@@ -1359,7 +1542,11 @@ def cloturer_tiktok_lives_for_streamer(unique_id: str, *, reason: str = 'tiktok_
 _last_end_reconcile_at: datetime | None = None
 
 
-def reconcile_ended_tiktok_lives(*, min_interval_seconds: float = 60.0) -> int:
+def reconcile_ended_tiktok_lives(
+    *,
+    min_interval_seconds: float = 60.0,
+    vendeur_id: int | None = None,
+) -> int:
     """Filet : clôture un live AZLive encore en_cours si TikTok est offline.
 
     Utilisé quand `streamEnd` n'arrive pas. Combine live_status + room_id :
@@ -1374,14 +1561,15 @@ def reconcile_ended_tiktok_lives(*, min_interval_seconds: float = 60.0) -> int:
     now = timezone.now()
     if (
         _last_end_reconcile_at is not None
-        and (now - _last_end_reconcile_at).total_seconds() < max(min_interval_seconds, 45.0)
+        and (now - _last_end_reconcile_at).total_seconds() < max(min_interval_seconds, 25.0)
     ):
         return 0
 
+    active_qs = Live.objects.filter(statut=Live.STATUT_EN_COURS)
+    if vendeur_id is not None:
+        active_qs = active_qs.filter(vendeur_id=vendeur_id)
     active = list(
-        Live.objects.filter(statut=Live.STATUT_EN_COURS)
-        .select_related('vendeur')
-        .order_by('vendeur_id', '-date_live')
+        active_qs.select_related('vendeur').order_by('vendeur_id', '-date_live')
     )
     if not active:
         return 0
@@ -1397,12 +1585,20 @@ def reconcile_ended_tiktok_lives(*, min_interval_seconds: float = 60.0) -> int:
             titre = (live.titre or '').lower()
             if 'tiktok' not in titre:
                 continue
-        unique_id = resolve_vendeur_tiktok_unique_id(live.vendeur)
+
+        tiktok = dict((live.diffusion_plateformes or {}).get('tiktok') or {})
+        unique_id = normalize_tiktok_username(
+            str(tiktok.get('unique_id') or tiktok.get('username') or '')
+        )
+        if not unique_id:
+            unique_id = resolve_vendeur_tiktok_unique_id(live.vendeur)
         if not unique_id:
             continue
         seen_vendeurs.add(live.vendeur_id)
 
-        # 1) live_status (rapide)
+        started_at = live.date_debut or live.date_live
+        if started_at and (now - started_at).total_seconds() < 60:
+            continue
         status_hint, _room = _check_live_via_live_status(unique_id)
         if status_hint is True:
             continue
@@ -1412,6 +1608,14 @@ def reconcile_ended_tiktok_lives(*, min_interval_seconds: float = 60.0) -> int:
         # 2) room_id (confirmation)
         room_hint, _fresh = _check_live_via_room_id(unique_id)
         if room_hint is True:
+            continue
+        page_hint, page_room_id = _check_live_via_tiktok_page(unique_id)
+        if page_hint is True:
+            logger.info(
+                'Reconcile TikTok @%s : page locale confirme encore le live (room_id=%s)',
+                unique_id,
+                page_room_id,
+            )
             continue
 
         # Offline si l'un des deux dit False, et aucun ne dit True.
@@ -1436,6 +1640,7 @@ def sync_external_tiktok_lives(
     vendeur_id: int | None = None,
     rest: bool = True,
     wait_ws_seconds: float = 20.0,
+    close_if_offline: bool = True,
 ) -> dict[str, int]:
     """Détecte un live TikTok pour les comptes **connectés** (OAuth).
 
@@ -1531,6 +1736,9 @@ def sync_external_tiktok_lives(
             continue
 
         if is_live is False:
+            if not close_if_offline:
+                skipped += 1
+                continue
             # Offline confirmé → clôturer / archiver les lives TikTok suivis.
             for live in Live.objects.filter(
                 vendeur=vendeur, statut=Live.STATUT_EN_COURS
@@ -1555,6 +1763,23 @@ def sync_external_tiktok_lives(
         result['ws_rate_limited'] = 1
     if _tiktool_is_rate_limited():
         result['rate_limited'] = 1
+    return result
+
+
+def kick_tiktok_live_detection(*, vendeur_id: int | None = None) -> dict[str, int]:
+    """Détection non bloquante pour GET /lives/ : scouts WS + REST, puis clôture si offline."""
+    if not tiktool_configured():
+        return {'started': 0, 'stopped': 0, 'skipped': 0}
+    result = sync_external_tiktok_lives(
+        vendeur_id=vendeur_id,
+        rest=True,
+        wait_ws_seconds=0.0,
+        min_interval_seconds=45.0,
+        close_if_offline=False,
+    )
+    stopped = reconcile_ended_tiktok_lives(min_interval_seconds=30.0, vendeur_id=vendeur_id)
+    if stopped:
+        result['stopped'] = result.get('stopped', 0) + stopped
     return result
 
 

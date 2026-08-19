@@ -1,3 +1,5 @@
+import re
+
 from django.db import transaction
 from django.utils import timezone
 
@@ -98,6 +100,29 @@ def _provision_webrtc(live: Live, facebook_broadcasts: list[dict]) -> dict | Non
     }
 
 
+def _is_usable_tiktok_handle(handle: str) -> bool:
+    return bool(re.fullmatch(r'[a-z0-9._]{2,24}', handle)) and not handle.startswith('tt_')
+
+
+def _ensure_tiktok_username(vendeur) -> None:
+    """Complète tiktok_username via l'API user/info si l'OAuth n'a renvoyé que l'open_id."""
+    if vendeur.tiktok_username or not getattr(vendeur, 'tiktok_access_token', None):
+        return
+    from .jp_capture import normalize_tiktok_username
+    from .tiktok_oauth import TikTokOAuthError, get_user_profile
+
+    try:
+        profile = get_user_profile(vendeur.tiktok_access_token)
+    except TikTokOAuthError:
+        return
+    username = (profile.get('username') or '').strip()
+    handle = normalize_tiktok_username(username)
+    if not handle or not _is_usable_tiktok_handle(handle):
+        return
+    vendeur.tiktok_username = f'@{handle}'
+    vendeur.save(update_fields=['tiktok_username'])
+
+
 @transaction.atomic
 def demarrer_live(live: Live) -> Live:
     if live.statut == Live.STATUT_EN_COURS and live.diffusion_plateformes:
@@ -121,19 +146,23 @@ def demarrer_live(live: Live) -> Live:
     except FacebookLiveError as exc:
         raise LiveServiceError(exc.message, status_code=exc.status_code) from exc
 
+    _ensure_tiktok_username(live.vendeur)
+    live.vendeur.refresh_from_db(fields=['tiktok_username'])
+
     tiktok_broadcast = None
-    if live.vendeur.tiktok_username:
+    tiktok_connected = bool(live.vendeur.tiktok_username or live.vendeur.tiktok_open_id)
+    if tiktok_connected:
         if live.vendeur.is_demo_mode:
             tiktok_broadcast = create_demo_tiktok_broadcast(live.vendeur)
         else:
             tiktok_broadcast = build_tiktok_diffusion(live)
 
     if not facebook_broadcasts and not tiktok_broadcast and not live.vendeur.is_demo_mode:
-        if not pages:
-            raise LiveServiceError(
-                'Aucune page Facebook sélectionnée. Synchronisez vos pages ou choisissez-en dans le live.',
-                status_code=400,
-            )
+        raise LiveServiceError(
+            "Pour un live TikTok, connectez d'abord le compte TikTok du vendeur. "
+            "Sinon choisissez une page Facebook dans le live.",
+            status_code=400,
+        )
 
     _ensure_webhooks(live.vendeur)
 

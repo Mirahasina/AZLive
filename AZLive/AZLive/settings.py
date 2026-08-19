@@ -256,6 +256,7 @@ MEDIAMTX_RTSP_HOST = os.environ.get('MEDIAMTX_RTSP_HOST', 'localhost:8554')
 # Paramètres d'encodage ffmpeg pour le relais vers Facebook (H.264 + AAC requis).
 MEDIAMTX_FFMPEG_VIDEO_BITRATE = os.environ.get('MEDIAMTX_FFMPEG_VIDEO_BITRATE', '3000k')
 MEDIAMTX_FFMPEG_PRESET = os.environ.get('MEDIAMTX_FFMPEG_PRESET', 'veryfast')
+MEDIAMTX_FFMPEG_PATH = os.environ.get('MEDIAMTX_FFMPEG_PATH', '')
 
 # TikTok OAuth (Login Kit) — Sandbox ou Production
 TIKTOK_CLIENT_KEY = os.environ.get('TIKTOK_CLIENT_KEY', '')
@@ -268,7 +269,7 @@ TIKTOK_LOGIN_SUCCESS_URL = os.environ.get(
     'TIKTOK_LOGIN_SUCCESS_URL',
     'http://localhost:3000/auth/tiktok/success',
 )
-TIKTOK_OAUTH_SCOPES = os.environ.get('TIKTOK_OAUTH_SCOPES', 'user.info.basic')
+TIKTOK_OAUTH_SCOPES = os.environ.get('TIKTOK_OAUTH_SCOPES', 'user.info.basic,user.info.profile')
 
 # OAuth client public — réutilise TIKTOK_REDIRECT_URI (un seul callback à enregistrer chez TikTok)
 TIKTOK_PUBLIC_REDIRECT_URI = os.environ.get(
