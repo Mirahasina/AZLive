@@ -14,6 +14,8 @@ import os
 import sys
 from pathlib import Path
 
+import dj_database_url
+
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -110,8 +112,17 @@ if 'test' in sys.argv:
         }
     }
 else:
-    DATABASES = {
-        'default': {
+    # Neon / Render / Railway : DATABASE_URL (postgres://…?sslmode=require)
+    # Local : POSTGRES_* (voir .env.example)
+    if os.environ.get('DATABASE_URL'):
+        DATABASES = {
+            'default': dj_database_url.config(
+                conn_max_age=600,
+                ssl_require=True,
+            ),
+        }
+    else:
+        _pg = {
             'ENGINE': 'django.db.backends.postgresql',
             'NAME': os.environ.get('POSTGRES_DB', 'AZLive'),
             'USER': os.environ.get('POSTGRES_USER', 'postgres'),
@@ -119,7 +130,10 @@ else:
             'HOST': os.environ.get('POSTGRES_HOST', 'localhost'),
             'PORT': os.environ.get('POSTGRES_PORT', '5432'),
         }
-    }
+        _sslmode = os.environ.get('POSTGRES_SSLMODE', '')
+        if _sslmode or 'neon.tech' in _pg['HOST']:
+            _pg['OPTIONS'] = {'sslmode': _sslmode or 'require'}
+        DATABASES = {'default': _pg}
 
 
 # Password validation
