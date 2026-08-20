@@ -14,8 +14,6 @@ import os
 import sys
 from pathlib import Path
 
-import dj_database_url
-
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -115,6 +113,8 @@ else:
     # Neon / Render / Railway : DATABASE_URL (postgres://…?sslmode=require)
     # Local : POSTGRES_* (voir .env.example)
     if os.environ.get('DATABASE_URL'):
+        import dj_database_url
+
         DATABASES = {
             'default': dj_database_url.config(
                 conn_max_age=600,
