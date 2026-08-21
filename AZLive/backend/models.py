@@ -46,7 +46,7 @@ class PageFacebook(models.Model):
 
 
 class ParametresPlateforme(models.Model):
-    """Paramètres globaux de la plateforme — un seul enregistrement attendu (singleton)."""
+    """Paramètres globaux de la plateforme - un seul enregistrement attendu (singleton)."""
     taux_commission = models.DecimalField(
         max_digits=5, decimal_places=4, default=0.10,
         help_text="Taux de commission prélevé par la plateforme (ex: 0.10 = 10%)"
@@ -126,7 +126,7 @@ class ProduitImage(models.Model):
         ordering = ['created_at', 'id']
 
     def __str__(self):
-        return f"Image #{self.pk} — {self.produit.nom}"
+        return f"Image #{self.pk} - {self.produit.nom}"
 
 
 class Variante(models.Model):
@@ -181,7 +181,7 @@ class LiveCodeJP(models.Model):
         ]
 
     def __str__(self):
-        return f"Live #{self.live_id} — {self.code} → {self.variante_id}"
+        return f"Live #{self.live_id} - {self.code} → {self.variante_id}"
 
     def clean(self):
         from .jp_codes import normalize_jp_code
@@ -293,24 +293,28 @@ class Commande(models.Model):
 
     def _adjust_variante_stock(self, delta, *, required: bool = False) -> bool:
         """Ajuste le stock sous verrou. required=True lève si le stock ne suffit pas."""
+        from django.db import transaction
+
         variante = self._get_stock_variante()
         if not variante:
             if required and delta < 0:
                 raise StockAdjustmentError('Aucune variante pour ajuster le stock.')
             return True
 
-        locked = type(variante).objects.select_for_update().get(pk=variante.pk)
-        if locked.stock + delta < 0:
-            if required:
-                raise StockAdjustmentError(
-                    f'Stock insuffisant ({locked.stock} disponible).'
-                )
-            return False
+        # select_for_update exige une transaction (inbox Messenger / threads hors request).
+        with transaction.atomic():
+            locked = type(variante).objects.select_for_update().get(pk=variante.pk)
+            if locked.stock + delta < 0:
+                if required:
+                    raise StockAdjustmentError(
+                        f'Stock insuffisant ({locked.stock} disponible).'
+                    )
+                return False
 
-        locked.stock += delta
-        locked.save(update_fields=['stock'])
-        variante.stock = locked.stock
-        return True
+            locked.stock += delta
+            locked.save(update_fields=['stock'])
+            variante.stock = locked.stock
+            return True
 
     def get_prix_unitaire(self):
         if self.variante_id:

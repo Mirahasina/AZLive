@@ -101,7 +101,7 @@ def validate_oauth_state(state: str) -> None:
         raise FacebookOAuthError('State OAuth invalide ou expiré.') from exc
 
 
-def build_oauth_url(state: str) -> str:
+def build_oauth_url(state: str, *, force_login: bool = False) -> str:
     params = {
         'client_id': settings.FACEBOOK_APP_ID,
         'redirect_uri': settings.FACEBOOK_REDIRECT_URI,
@@ -115,6 +115,10 @@ def build_oauth_url(state: str) -> str:
     else:
         # Facebook Login classique : permissions via scope
         params['scope'] = settings.FACEBOOK_OAUTH_SCOPES
+    # « Autre compte » : demande une ré-auth sans passer par logout.php
+    # (logout.php redirige vers facebook.com et casse le parcours pages AZLive).
+    if force_login:
+        params['auth_type'] = 'reauthenticate'
     return f'https://www.facebook.com/{GRAPH_API_VERSION}/dialog/oauth?{urllib.parse.urlencode(params)}'
 
 

@@ -40,12 +40,13 @@ MP_INTENT_SYSTEM_PROMPT = (
     '- "intent": une parmi "annulation", "annulation_modification", "modification", "infos_commande", '
     '"remerciement", "reprise", "question", "autre".\n'
     '- "confiance": nombre entre 0 et 1.\n'
-    "Règles :\n"
-    "- annulation si le client ne veut plus la commande entière.\n"
-    "- annulation_modification si il veut annuler une modification récente sans annuler la commande.\n"
-    "- modification seulement si il veut CHANGER une commande déjà faite (hanova, ovaina…).\n"
-    "- infos_commande si il donne (ou complète) nom, tél, adresse, date, heure, quantité.\n"
-    "- Ne confonds pas annulation et modification.\n"
+    "Règles STRICTES :\n"
+    "- Si le client veut ARRÊTER / NE PLUS PRENDRE la commande → intent=annulation "
+    "(même si le message est long ou mélange d'autres mots).\n"
+    "- annulation_modification UNIQUEMENT s'il annule une modification récente, pas la commande.\n"
+    "- modification UNIQUEMENT s'il veut CHANGER adresse/tél/date/qté (hanova, ovaina…).\n"
+    "- infos_commande s'il donne nom, tél, adresse, date, heure, quantité.\n"
+    "- En cas de doute entre annulation et autre chose → choisir annulation.\n"
     "Glossaire : " + MP_INTENT_LEXICON
 )
 
@@ -172,7 +173,7 @@ def _message_looks_like_order_info(text: str, parsed: dict[str, str]) -> bool:
 
 
 def classify_mp_intent_regex(text: str, client=None) -> dict[str, Any] | None:
-    """Intentions claires via regex — None si ambigu."""
+    """Intentions claires via regex - None si ambigu."""
     from .human_assistance import OFF_TOPIC_HINTS
     from .order_confirmation import (
         _is_cancellation,

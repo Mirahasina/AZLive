@@ -96,6 +96,7 @@ class TikTokWebhookView(APIView):
                     message_text=comment_text,
                     channel='TikTok',
                     id_field='tiktok_id',
+                    sender_name=sender_name,
                 )
                 return Response(result, status=status.HTTP_200_OK)
             except OrderConfirmationError as exc:

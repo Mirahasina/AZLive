@@ -12,6 +12,7 @@ Endpoints (AllowAny) :
   POST /api/public/lives/<live_id>/order-form/
 """
 import urllib.parse
+import re
 
 from django.conf import settings
 from django.db import models
@@ -26,6 +27,7 @@ from .jp_capture import normalize_tiktok_username
 from .models import Client, Commande, Live, LiveCodeJP
 from .order_confirmation import (
     OrderConfirmationError,
+    adjust_commande_quantite_public,
     cancel_commande_public,
     confirm_commande_from_message,
     _missing_confirmation_fields,
@@ -68,6 +70,19 @@ def _pending_commandes(live: Live, clients):
     )
 
 
+def _confirmed_cancellable_commandes(live: Live, clients):
+    """Commandes déjà confirmées/préparées : annulables / quantités réductibles via le lien."""
+    return (
+        Commande.objects.select_related('produit', 'variante', 'client')
+        .filter(
+            live=live,
+            client__in=clients,
+            statut__in=(Commande.STATUT_CONFIRME, Commande.STATUT_PREPARE),
+        )
+        .order_by('ordre_jp', 'id')
+    )
+
+
 def _commande_is_eligible(commande: Commande) -> bool:
     """Tête de file + assez de stock pour confirmer maintenant."""
     from .order_confirmation import _order_is_eligible
@@ -83,7 +98,7 @@ def _is_waitlisted_complete(commande: Commande) -> bool:
     return _infos_completes(commande) and not _commande_is_eligible(commande)
 
 
-def _serialize_commandes(live: Live, commandes) -> list[dict]:
+def _serialize_commandes(live: Live, commandes, *, confirmed: bool = False) -> list[dict]:
     variante_ids = [c.variante_id for c in commandes if c.variante_id]
     code_map = _live_code_map(live, variante_ids)
     items = []
@@ -94,6 +109,9 @@ def _serialize_commandes(live: Live, commandes) -> list[dict]:
         stock_actuel = variante.stock if variante else None
         eligible = _commande_is_eligible(commande)
         infos_ok = _infos_completes(commande)
+        qty = commande.quantite
+        # Confirmé : on ne peut que diminuer (max = quantité déjà commandée).
+        quantite_max = int(qty) if confirmed and qty else None
         items.append(
             {
                 'commande_id': commande.id,
@@ -102,13 +120,16 @@ def _serialize_commandes(live: Live, commandes) -> list[dict]:
                 'taille': variante.taille if variante else '',
                 'couleur': variante.couleur if variante else '',
                 'prix_unitaire': str(variante.prix_unitaire) if variante else None,
-                'quantite': commande.quantite,
-                'stock_disponible': remaining,
+                'quantite': qty,
+                'quantite_max': quantite_max,
+                'peut_augmenter': not confirmed,
+                'statut': commande.statut,
+                'stock_disponible': remaining if not confirmed else qty,
                 'stock_actuel': stock_actuel,
-                'en_rupture': remaining is not None and remaining <= 0,
-                'en_liste_attente': not eligible,
-                'infos_completes': infos_ok,
-                'pret_a_confirmer': eligible and infos_ok,
+                'en_rupture': (not confirmed) and remaining is not None and remaining <= 0,
+                'en_liste_attente': (not confirmed) and not eligible,
+                'infos_completes': infos_ok if not confirmed else True,
+                'pret_a_confirmer': (not confirmed) and eligible and infos_ok,
             }
         )
     return items
@@ -147,6 +168,7 @@ class PublicOrderFormAPIView(APIView):
                     **base,
                     'found': False,
                     'commandes': [],
+                    'commandes_confirmees': [],
                     'commandes_liste_attente': [],
                 },
                 status=status.HTTP_200_OK,
@@ -159,12 +181,14 @@ class PublicOrderFormAPIView(APIView):
                     **base,
                     'found': False,
                     'commandes': [],
+                    'commandes_confirmees': [],
                     'commandes_liste_attente': [],
                 },
                 status=status.HTTP_200_OK,
             )
 
         commandes_a_traiter, commandes_attente = _split_pending_commandes(live, clients)
+        commandes_confirmees = list(_confirmed_cancellable_commandes(live, clients))
         client = clients.first()
         return Response(
             {
@@ -185,9 +209,13 @@ class PublicOrderFormAPIView(APIView):
                         else ''
                     ),
                 },
-                # Uniquement les JP à compléter / à confirmer (stock disponible).
+                # JP à compléter / confirmer (nouveaux articles = nouveau JP requis).
                 'commandes': _serialize_commandes(live, commandes_a_traiter),
-                # Déjà en file d'attente (infos OK, stock pas encore libre) — ne pas re-afficher le formulaire.
+                # Déjà confirmées : annulables ou quantité réductible (pas d'augmentation).
+                'commandes_confirmees': _serialize_commandes(
+                    live, commandes_confirmees, confirmed=True
+                ),
+                # Déjà en file d'attente (infos OK, stock pas encore libre).
                 'commandes_liste_attente': _serialize_commandes(live, commandes_attente),
             },
             status=status.HTTP_200_OK,
@@ -213,6 +241,13 @@ class PublicOrderFormAPIView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        telephone_raw = str(data.get('telephone') or '').strip()
+        telephone_digits = re.sub(r'\D', '', telephone_raw)
+        if len(telephone_digits) != 10:
+            return Response(
+                {'detail': 'Le numéro de téléphone doit contenir exactement 10 chiffres.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         items = data.get('items') or []
         if not isinstance(items, list) or not items:
             return Response(
@@ -230,7 +265,7 @@ class PublicOrderFormAPIView(APIView):
 
         parsed_data = {
             'nom': str(data.get('nom')).strip(),
-            'telephone': str(data.get('telephone')).strip(),
+            'telephone': telephone_digits,
             'adresse': str(data.get('adresse')).strip(),
             'date_livraison': str(data.get('date_livraison')).strip(),
             'heure_livraison': str(data.get('heure_livraison')).strip(),
@@ -262,11 +297,23 @@ class PublicOrderFormAPIView(APIView):
             if commande.variante_id:
                 commande.variante.refresh_from_db()
 
+            # Le fil MP est la source de vérité : écrire les champs structurés en
+            # format libellé (noms composés OK). Ne jamais envoyer une note système
+            # du type « Informations transmises… » - elle était parsée comme nom/adresse.
+            inbound_text = (
+                f"Nom : {parsed_data['nom']}\n"
+                f"Téléphone : {parsed_data['telephone']}\n"
+                f"Adresse : {parsed_data['adresse']}\n"
+                f"Date : {parsed_data['date_livraison']}\n"
+                f"Heure : {parsed_data['heure_livraison']}\n"
+                f"Quantité : {quantite}"
+            )
+
             try:
                 outcome = confirm_commande_from_message(
                     commande,
                     parsed_data,
-                    inbound_text='Informations transmises via le formulaire de commande (TikTok).',
+                    inbound_text=inbound_text,
                     canal='TikTok',
                 )
                 # Liste d'attente = infos OK, pas encore de stock → succès partiel, pas une erreur.
@@ -395,6 +442,65 @@ class PublicOrderCancelAPIView(APIView):
         )
 
 
+class PublicOrderAdjustAPIView(APIView):
+    """Réduit la quantité d'une commande confirmée (ou annule si quantite=0). Pas d'augmentation."""
+
+    permission_classes = [AllowAny]
+
+    def post(self, request, live_id: int):
+        live = get_object_or_404(Live, pk=live_id)
+        data = request.data or {}
+        handle = (data.get('handle') or '').strip()
+        clients = _match_clients(handle)
+        if not handle or not clients.exists():
+            return Response(
+                {'detail': 'Aucune commande trouvée pour ce compte TikTok.'},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        try:
+            commande_id = int(data.get('commande_id'))
+            quantite = int(data.get('quantite'))
+        except (TypeError, ValueError):
+            return Response(
+                {'detail': 'commande_id et quantite doivent être des entiers.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        commande = (
+            Commande.objects.select_related('produit', 'variante', 'client')
+            .filter(
+                live=live,
+                client__in=clients,
+                id=commande_id,
+                statut__in=(
+                    Commande.STATUT_JP_CAPTURE,
+                    Commande.STATUT_CONFIRME,
+                    Commande.STATUT_PREPARE,
+                ),
+            )
+            .first()
+        )
+        if not commande:
+            return Response(
+                {'detail': 'Commande introuvable ou non modifiable pour ce compte/live.'},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        try:
+            outcome = adjust_commande_quantite_public(commande, quantite)
+        except OrderConfirmationError as exc:
+            return Response({'detail': exc.message}, status=exc.status_code)
+
+        return Response(
+            {
+                'status': outcome.get('status'),
+                'annule': bool(outcome.get('annule')),
+                'quantite': outcome.get('quantite'),
+                'commande_id': commande_id,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
 def _public_order_frontend_url(live_id: int, **query) -> str:
     base = settings.AZLIVE_PUBLIC_ORDER_BASE_URL.rstrip('/')
     qs = urllib.parse.urlencode(query)
@@ -413,9 +519,15 @@ class PublicTikTokLoginAPIView(APIView):
                 {'detail': 'Connexion TikTok non configurée sur le serveur.'},
                 status=status.HTTP_503_SERVICE_UNAVAILABLE,
             )
+        force_raw = (request.query_params.get('force') or '').strip().lower()
+        force_login = force_raw in ('1', 'true', 'yes')
         state, challenge = generate_public_oauth_state(live_id)
         return Response(
-            {'auth_url': build_public_oauth_url(state, challenge)},
+            {
+                'auth_url': build_public_oauth_url(
+                    state, challenge, force_login=force_login
+                )
+            },
             status=status.HTTP_200_OK,
         )
 

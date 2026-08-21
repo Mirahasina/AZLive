@@ -85,6 +85,7 @@ def extract_facebook_messaging_events(payload: dict[str, Any]) -> list[dict[str,
                 {
                     'page_id': page_id,
                     'sender_facebook_id': sender_id,
+                    'sender_name': (item.get('sender') or {}).get('name') or '',
                     'message_text': text or f'[ref:{ref}]',
                     'referral_ref': ref,
                 }
@@ -123,6 +124,7 @@ def process_facebook_webhook_payload(payload: dict[str, Any]) -> dict[str, Any]:
                     page_id=event.get('page_id'),
                     id_field='facebook_id',
                     referral_ref=event.get('referral_ref') or '',
+                    sender_name=event.get('sender_name') or '',
                 )
                 results.append(result)
             except OrderConfirmationError as exc:

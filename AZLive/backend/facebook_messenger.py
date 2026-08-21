@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 
 def _is_test_facebook_recipient(recipient_id: str | None) -> bool:
-    """IDs synthétiques des tests curl — Meta les refuse (#100 recipient invalid)."""
+    """IDs synthétiques des tests curl - Meta les refuse (#100 recipient invalid)."""
     value = str(recipient_id or '')
     if not value:
         return True
@@ -30,7 +30,7 @@ def send_facebook_private_message(page: PageFacebook, recipient_id: str, text: s
 
     if _is_test_facebook_recipient(recipient_id):
         logger.info(
-            '[MESSAGING MOCK] skip Graph API — recipient test %s (page %s)',
+            '[MESSAGING MOCK] skip Graph API - recipient test %s (page %s)',
             recipient_id,
             page.page_id,
         )

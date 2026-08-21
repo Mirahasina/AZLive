@@ -201,11 +201,11 @@ REST_FRAMEWORK = {
         'rest_framework.authentication.TokenAuthentication',
         'rest_framework.authentication.SessionAuthentication',
     ],
-    # W1 — Sécurité par défaut : lecture publique, écriture authentifiée
+    # W1 - Sécurité par défaut : lecture publique, écriture authentifiée
     'DEFAULT_PERMISSION_CLASSES': [
         'rest_framework.permissions.IsAuthenticatedOrReadOnly',
     ],
-    # W2 — Pagination par défaut sur toutes les listes
+    # W2 - Pagination par défaut sur toutes les listes
     'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
     'PAGE_SIZE': 50,
 }
@@ -274,7 +274,7 @@ AZLIVE_JP_RELANCE_POLL_SECONDS = int(os.environ.get('AZLIVE_JP_RELANCE_POLL_SECO
 # seulement si elle date de moins de N heures (évite des données vieilles de semaines/mois).
 AZLIVE_REPRISE_INFO_MAX_HOURS = int(os.environ.get('AZLIVE_REPRISE_INFO_MAX_HOURS', '72'))
 
-# MediaMTX — pont WebRTC (navigateur) -> RTMPS (Facebook Live).
+# MediaMTX - pont WebRTC (navigateur) -> RTMPS (Facebook Live).
 # Si MEDIAMTX_ENABLED est faux, le démarrage de live garde l'ancien comportement
 # (l'URL RTMP est seulement renvoyée, à utiliser dans OBS).
 MEDIAMTX_ENABLED = os.environ.get('MEDIAMTX_ENABLED', 'false').lower() in ('1', 'true', 'yes', 'on')
@@ -289,7 +289,7 @@ MEDIAMTX_FFMPEG_VIDEO_BITRATE = os.environ.get('MEDIAMTX_FFMPEG_VIDEO_BITRATE', 
 MEDIAMTX_FFMPEG_PRESET = os.environ.get('MEDIAMTX_FFMPEG_PRESET', 'veryfast')
 MEDIAMTX_FFMPEG_PATH = os.environ.get('MEDIAMTX_FFMPEG_PATH', '')
 
-# TikTok OAuth (Login Kit) — Sandbox ou Production
+# TikTok OAuth (Login Kit) - Sandbox ou Production
 TIKTOK_CLIENT_KEY = os.environ.get('TIKTOK_CLIENT_KEY', '')
 TIKTOK_CLIENT_SECRET = os.environ.get('TIKTOK_CLIENT_SECRET', '')
 TIKTOK_REDIRECT_URI = os.environ.get(
@@ -302,7 +302,7 @@ TIKTOK_LOGIN_SUCCESS_URL = os.environ.get(
 )
 TIKTOK_OAUTH_SCOPES = os.environ.get('TIKTOK_OAUTH_SCOPES', 'user.info.basic,user.info.profile')
 
-# OAuth client public — réutilise TIKTOK_REDIRECT_URI (un seul callback à enregistrer chez TikTok)
+# OAuth client public - réutilise TIKTOK_REDIRECT_URI (un seul callback à enregistrer chez TikTok)
 TIKTOK_PUBLIC_REDIRECT_URI = os.environ.get(
     'TIKTOK_PUBLIC_REDIRECT_URI',
     TIKTOK_REDIRECT_URI,

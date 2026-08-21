@@ -11,6 +11,7 @@ from .models import Commande, Message, PageFacebook
 from .order_confirmation import (
     CANCELLABLE_STATUSES,
     OrderConfirmationError,
+    _is_cancellation,
     process_inbound_private_message,
 )
 
@@ -18,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 POLL_INTERVAL_SECONDS = 8
 CONVERSATION_LIMIT = 15
-MESSAGE_LIMIT = 8
+MESSAGE_LIMIT = 20
 
 _seen_mids: set[str] = set()
 _seen_lock = threading.Lock()
@@ -28,8 +29,8 @@ _inbox_listeners: dict[str, '_MessengerInboxListener'] = {}
 _listeners_lock = threading.Lock()
 
 
-def _remember_mid(mid: str) -> bool:
-    """True si le mid est nouveau (à traiter)."""
+def _try_claim_mid(mid: str) -> bool:
+    """Réserve un mid pour traitement. False s'il est déjà réservé."""
     if not mid:
         return True
     with _seen_lock:
@@ -37,10 +38,17 @@ def _remember_mid(mid: str) -> bool:
             return False
         _seen_mids.add(mid)
         if len(_seen_mids) > _MAX_SEEN:
-            # Purge simple : garde la moitié la plus récente (set non ordonné → clear partiel).
             for stale in list(_seen_mids)[: len(_seen_mids) // 2]:
                 _seen_mids.discard(stale)
         return True
+
+
+def _release_mid(mid: str) -> None:
+    """Libère un mid après échec pour permettre un nouvel essai."""
+    if not mid:
+        return
+    with _seen_lock:
+        _seen_mids.discard(mid)
 
 
 def _already_recorded_inbound(psid: str, text: str) -> bool:
@@ -51,6 +59,16 @@ def _already_recorded_inbound(psid: str, text: str) -> bool:
         contenu=text,
         commande__client__facebook_id=psid,
     ).exists()
+
+
+def _should_skip_inbound(psid: str, text: str) -> bool:
+    """Ne saute pas une annulation tant qu'une commande est encore annulable."""
+    if _is_cancellation(text) and Commande.objects.filter(
+        client__facebook_id=psid,
+        statut__in=CANCELLABLE_STATUSES,
+    ).exists():
+        return False
+    return _already_recorded_inbound(psid, text)
 
 
 def _pending_facebook_pages() -> list[PageFacebook]:
@@ -97,12 +115,14 @@ def _fetch_recent_conversations(page: PageFacebook) -> list[dict[str, Any]]:
     return data if isinstance(data, list) else []
 
 
-def _participant_psid(conversation: dict[str, Any], page_id: str) -> str | None:
+def _participant_info(conversation: dict[str, Any], page_id: str) -> tuple[str | None, str | None]:
+    """Retourne (psid, nom Facebook) du client dans la conversation."""
     for participant in ((conversation.get('participants') or {}).get('data') or []):
         pid = str(participant.get('id') or '')
         if pid and pid != str(page_id):
-            return pid
-    return None
+            name = (participant.get('name') or '').strip() or None
+            return pid, name
+    return None, None
 
 
 def sync_page_messenger_inbox(page: PageFacebook) -> list[dict[str, Any]]:
@@ -118,7 +138,7 @@ def sync_page_messenger_inbox(page: PageFacebook) -> list[dict[str, Any]]:
 
     results: list[dict[str, Any]] = []
     for conversation in conversations:
-        psid = _participant_psid(conversation, page.page_id)
+        psid, fb_name = _participant_info(conversation, page.page_id)
         if not psid or not psid.isdigit():
             continue
         from datetime import timedelta
@@ -138,13 +158,15 @@ def sync_page_messenger_inbox(page: PageFacebook) -> list[dict[str, Any]]:
         for item in reversed(messages):
             mid = str(item.get('id') or '')
             text = (item.get('message') or '').strip()
-            sender = (item.get('from') or {}).get('id')
-            if not text or str(sender) != psid:
+            sender = item.get('from') or {}
+            sender_id = str(sender.get('id') or '')
+            if not text or sender_id != psid:
                 continue
-            if not _remember_mid(mid):
+            if not _try_claim_mid(mid):
                 continue
-            if _already_recorded_inbound(psid, text):
+            if _should_skip_inbound(psid, text):
                 continue
+            sender_name = (sender.get('name') or fb_name or '').strip()
             try:
                 result = process_inbound_private_message(
                     sender_id=psid,
@@ -152,6 +174,7 @@ def sync_page_messenger_inbox(page: PageFacebook) -> list[dict[str, Any]]:
                     channel='Facebook',
                     page_id=page.page_id,
                     id_field='facebook_id',
+                    sender_name=sender_name,
                 )
                 results.append({'mid': mid, 'psid': psid, **result})
                 logger.info(
@@ -161,7 +184,27 @@ def sync_page_messenger_inbox(page: PageFacebook) -> list[dict[str, Any]]:
                     result.get('status'),
                 )
             except OrderConfirmationError as exc:
+                # Erreur métier : on garde le mid sauf si une annulation reste possible
+                # (ex. premier crash technique qui a laissé la commande active).
+                if _is_cancellation(text) and Commande.objects.filter(
+                    client__facebook_id=psid,
+                    statut__in=CANCELLABLE_STATUSES,
+                ).exists():
+                    _release_mid(mid)
                 results.append({'mid': mid, 'psid': psid, 'status': 'error', 'detail': exc.message})
+                logger.warning(
+                    'Inbox sync page %s PSID %s erreur métier: %s',
+                    page.page_id,
+                    psid,
+                    exc.message,
+                )
+            except Exception:  # noqa: BLE001
+                _release_mid(mid)
+                logger.exception(
+                    'Inbox sync page %s PSID %s échec technique (mid relâché)',
+                    page.page_id,
+                    psid,
+                )
     return results
 
 
@@ -200,8 +243,6 @@ class _MessengerInboxListener(threading.Thread):
 
 
 def start_messenger_inbox_listener(page: PageFacebook) -> None:
-    if not page or not page.page_id or not page.access_token:
-        return
     page_id = str(page.page_id)
     with _listeners_lock:
         existing = _inbox_listeners.get(page_id)
@@ -216,10 +257,10 @@ def stop_messenger_inbox_listener(page_id: str | None = None) -> None:
     with _listeners_lock:
         if page_id:
             listener = _inbox_listeners.pop(str(page_id), None)
-            targets = [listener] if listener else []
+            if listener:
+                listener.stop()
         else:
             targets = list(_inbox_listeners.values())
             _inbox_listeners.clear()
-    for listener in targets:
-        if listener:
-            listener.stop()
+            for listener in targets:
+                listener.stop()

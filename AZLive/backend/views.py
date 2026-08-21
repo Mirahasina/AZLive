@@ -153,7 +153,7 @@ class CommandeDetailView(generics.RetrieveUpdateDestroyAPIView):
 
 
 class JPCaptureAPIView(APIView):
-    permission_classes = [AllowAny]  # MVP — accessible sans token
+    permission_classes = [AllowAny]  # MVP - accessible sans token
 
     def post(self, request):
         comment_text = request.data.get('comment_text', '')
@@ -278,12 +278,12 @@ class JPCaptureAPIView(APIView):
 
 
 def _create_jp_commande(client, produit, live=None):
-    """Alias rétrocompatible — voir backend.jp_capture.create_jp_commande."""
+    """Alias rétrocompatible - voir backend.jp_capture.create_jp_commande."""
     return create_jp_commande(client, produit, live=live)
 
 
 class JPAnalyseAPIView(APIView):
-    permission_classes = [AllowAny]  # MVP — accessible sans token
+    permission_classes = [AllowAny]  # MVP - accessible sans token
 
     def post(self, request):
         comment_text = request.data.get('comment_text', '')
@@ -295,7 +295,7 @@ class JPAnalyseAPIView(APIView):
 
 
 class LivraisonTrackingAPIView(APIView):
-    permission_classes = [AllowAny]  # MVP — accessible sans token
+    permission_classes = [AllowAny]  # MVP - accessible sans token
 
     def get(self, request):
         commande_id = request.query_params.get('commande_id')
@@ -310,7 +310,7 @@ class LivraisonTrackingAPIView(APIView):
 
 
 class TicketAPIView(APIView):
-    permission_classes = [AllowAny]  # MVP — accessible sans token
+    permission_classes = [AllowAny]  # MVP - accessible sans token
 
     def get(self, request, commande_id):
         commande = get_object_or_404(
@@ -359,7 +359,7 @@ class TicketAPIView(APIView):
 
 class CommandeSearchAPIView(generics.ListAPIView):
     serializer_class = CommandeSerializer
-    permission_classes = [AllowAny]  # MVP — accessible sans token
+    permission_classes = [AllowAny]  # MVP - accessible sans token
 
     def get_queryset(self):
         query = self.request.query_params.get('q', '').strip()
@@ -402,7 +402,7 @@ class JPRelanceAPIView(APIView):
 
 class CommandeUploadPaiementAPIView(APIView):
     parser_classes = [MultiPartParser, FormParser]
-    permission_classes = [AllowAny]  # MVP — accessible sans token
+    permission_classes = [AllowAny]  # MVP - accessible sans token
 
     def post(self, request, pk):
         commande = get_object_or_404(Commande, pk=pk)
@@ -441,7 +441,7 @@ class CommandeUploadPaiementAPIView(APIView):
 
 
 class CommandeEtiquetteJPAPIView(APIView):
-    permission_classes = [AllowAny]  # MVP — accessible sans token
+    permission_classes = [AllowAny]  # MVP - accessible sans token
 
     def get(self, request, pk):
         commande = get_object_or_404(Commande.objects.select_related('produit', 'variante'), pk=pk)
@@ -564,7 +564,7 @@ class CommandeConfirmerAPIView(APIView):
 
 
 class CommandeLancerLivraisonAPIView(APIView):
-    permission_classes = [AllowAny]  # MVP — accessible sans token
+    permission_classes = [AllowAny]  # MVP - accessible sans token
 
     def post(self, request, pk):
         commande = get_object_or_404(Commande.objects.select_related('client', 'produit__vendeur'), pk=pk)

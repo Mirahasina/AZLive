@@ -1,4 +1,4 @@
-# Generated manually — refactor variant fields from Produit to Variante
+# Generated manually - refactor variant fields from Produit to Variante
 
 from django.db import migrations, models
 

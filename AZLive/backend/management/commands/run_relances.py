@@ -8,7 +8,7 @@ class Command(BaseCommand):
         "Relance les clients en tête de file d'attente JP qui n'ont pas confirmé leurs "
         "informations, et libère leur place (expiration) après le nombre maximum de relances. "
         "Le suivant de la file monte alors automatiquement. "
-        "(En prod / runserver, un planificateur auto tourne déjà — cette commande reste "
+        "(En prod / runserver, un planificateur auto tourne déjà - cette commande reste "
         "utile pour un passage manuel ou --force.)"
     )
 
@@ -39,7 +39,7 @@ class Command(BaseCommand):
 
         for commande_id in result.get('expirations') or []:
             self.stdout.write(self.style.WARNING(
-                f'Commande #{commande_id} expirée (max relances atteint) — place libérée pour la file.'
+                f'Commande #{commande_id} expirée (max relances atteint) - place libérée pour la file.'
             ))
 
         self.stdout.write(self.style.SUCCESS(

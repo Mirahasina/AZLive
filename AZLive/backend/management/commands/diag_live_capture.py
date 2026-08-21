@@ -45,7 +45,7 @@ class Command(BaseCommand):
             self.stderr.write(self.style.ERROR('Aucun live trouvé.'))
             return
 
-        self.stdout.write(self.style.MIGRATE_HEADING(f'Live #{live.pk} — {live.statut}'))
+        self.stdout.write(self.style.MIGRATE_HEADING(f'Live #{live.pk} - {live.statut}'))
         self.stdout.write(f'  Vendeur: {live.vendeur} (demo_mode={live.vendeur.is_demo_mode})')
         self.stdout.write(f'  Commandes: {Commande.objects.filter(live=live).count()}')
 

@@ -43,12 +43,20 @@ class MediaMTXAuthAPIView(APIView):
                 payload.get('token')
                 or payload.get('password')
                 or self._token_from_query(payload.get('query'))
+                or self._token_from_authorization(request)
             )
             if self._publish_allowed(path, token):
                 return Response(status=status.HTTP_200_OK)
 
         logger.warning('MediaMTX auth refusé (action=%s, path=%s)', action, path)
         return Response({'detail': 'unauthorized'}, status=status.HTTP_401_UNAUTHORIZED)
+
+    @staticmethod
+    def _token_from_authorization(request) -> str | None:
+        auth = request.META.get('HTTP_AUTHORIZATION') or ''
+        if auth.lower().startswith('bearer '):
+            return auth[7:].strip() or None
+        return None
 
     @staticmethod
     def _token_from_query(query: str | None) -> str | None:

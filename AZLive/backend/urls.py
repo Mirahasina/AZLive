@@ -50,6 +50,7 @@ from .webhooks import FacebookWebhookView, TikTokWebhookView
 from .live_views import LiveDemarrerAPIView, LiveArreterAPIView
 from .media_views import MediaMTXAuthAPIView
 from .public_form_views import (
+    PublicOrderAdjustAPIView,
     PublicOrderCancelAPIView,
     PublicOrderFormAPIView,
     PublicTikTokCallbackAPIView,
@@ -97,7 +98,7 @@ urlpatterns = [
     path('collaborateurs/', CollaborateurListCreateView.as_view(), name='collaborateur-list-create'),
     path('collaborateurs/<int:pk>/', CollaborateurDetailView.as_view(), name='collaborateur-detail'),
 
-    # Commandes — routes spécifiques AVANT la route générique <int:pk>/
+    # Commandes - routes spécifiques AVANT la route générique <int:pk>/
     path('commandes/', CommandeListCreateView.as_view(), name='commande-list-create'),
     path('commandes/search/', CommandeSearchAPIView.as_view(), name='commande-search'),
     path('commandes/<int:pk>/upload-paiement/', CommandeUploadPaiementAPIView.as_view(), name='commande-upload-paiement'),
@@ -117,7 +118,7 @@ urlpatterns = [
     path('jp-analyze/', JPAnalyseAPIView.as_view(), name='jp-analyze'),
     path('jp-relance/', JPRelanceAPIView.as_view(), name='jp-relance'),
 
-    # Formulaire public de commande (live TikTok — collecte indirecte des infos client)
+    # Formulaire public de commande (live TikTok - collecte indirecte des infos client)
     path('public/lives/<int:live_id>/tiktok-login/', PublicTikTokLoginAPIView.as_view(), name='public-tiktok-login'),
     path('public/tiktok/callback/', PublicTikTokCallbackAPIView.as_view(), name='public-tiktok-callback'),
     path('public/lives/<int:live_id>/order-form/', PublicOrderFormAPIView.as_view(), name='public-order-form'),
@@ -126,12 +127,17 @@ urlpatterns = [
         PublicOrderCancelAPIView.as_view(),
         name='public-order-cancel',
     ),
+    path(
+        'public/lives/<int:live_id>/order-form/adjust/',
+        PublicOrderAdjustAPIView.as_view(),
+        name='public-order-adjust',
+    ),
 
     # Webhooks réseaux sociaux
     path('webhooks/facebook/', FacebookWebhookView.as_view(), name='webhook-facebook'),
     path('webhooks/tiktok/', TikTokWebhookView.as_view(), name='webhook-tiktok'),
 
-    # MediaMTX — authentification des publications WebRTC (diffusion navigateur)
+    # MediaMTX - authentification des publications WebRTC (diffusion navigateur)
     path('media/auth/', MediaMTXAuthAPIView.as_view(), name='media-auth'),
 
     # Dashboard

@@ -12,7 +12,7 @@ from . import config, service
 
 
 class LLMHealthAPIView(APIView):
-    """GET — état de la configuration LLM (clé présente, modèle, etc.)."""
+    """GET - état de la configuration LLM (clé présente, modèle, etc.)."""
     permission_classes = [AllowAny]
 
     def get(self, request):
@@ -20,7 +20,7 @@ class LLMHealthAPIView(APIView):
 
 
 class LLMChatAPIView(APIView):
-    """POST — appel direct au LLM (test brut). Body: {"prompt": "...", "json_mode": false}."""
+    """POST - appel direct au LLM (test brut). Body: {"prompt": "...", "json_mode": false}."""
     permission_classes = [AllowAny]
 
     def post(self, request):
@@ -46,7 +46,7 @@ class LLMChatAPIView(APIView):
 
 
 class LLMAnalyzeCommentAPIView(APIView):
-    """POST — analyse un commentaire de live.
+    """POST - analyse un commentaire de live.
 
     Body: {"comment_text": "...", "live_id": optionnel, "vendeur_id": optionnel}.
     `live_id`/`vendeur_id` restreignent le catalogue fourni au LLM (meilleur matching).
@@ -65,7 +65,7 @@ class LLMAnalyzeCommentAPIView(APIView):
 
 
 class LLMAnalyzeConfirmationAPIView(APIView):
-    """POST — analyse une réponse privée client.
+    """POST - analyse une réponse privée client.
 
     Body: {"message_text": "...", "client_context": {optionnel}}.
     """

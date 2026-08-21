@@ -6,7 +6,7 @@ malgache (« mividy aho », « alaiko ity mena ity », « mbola misy ve »…).
 
 Ce module appelle un LLM via une API compatible OpenAI (chat completions). Ça
 marche tel quel avec une offre GRATUITE comme Groq (free tier) ou un Ollama
-local — il suffit de pointer AZLIVE_LLM_BASE_URL / _API_KEY / _MODEL.
+local - il suffit de pointer AZLIVE_LLM_BASE_URL / _API_KEY / _MODEL.
 
 Principes :
 - Désactivé par défaut : sans clé configurée, analyze() renvoie None et le
@@ -95,7 +95,7 @@ class LLMCommentAnalyzer:
         except (urllib.error.URLError, TimeoutError) as exc:
             logger.warning('LLM indisponible: %s', exc)
             return None
-        except Exception as exc:  # noqa: BLE001 — un repli robuste ne doit jamais casser le flux
+        except Exception as exc:  # noqa: BLE001 - un repli robuste ne doit jamais casser le flux
             logger.warning('Erreur LLM inattendue: %s', exc)
             return None
 

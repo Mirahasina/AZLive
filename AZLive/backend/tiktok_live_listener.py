@@ -39,6 +39,18 @@ def _import_tiktok_live():
     return TikTokLiveClient, UserOfflineError, CommentEvent, ConnectEvent, DisconnectEvent, LiveEndEvent
 
 
+async def _safe_disconnect(client) -> None:
+    disconnect = getattr(client, 'disconnect', None)
+    if disconnect is None:
+        return
+    try:
+        result = disconnect(close_client=True)
+        if asyncio.iscoroutine(result):
+            await result
+    except Exception:
+        pass
+
+
 async def _check_is_live_async(unique_id: str) -> bool | None:
     if not tiktok_live_available():
         return None
@@ -50,18 +62,27 @@ async def _check_is_live_async(unique_id: str) -> bool | None:
         logger.info('TikTokLive is_live @%s indisponible: %s', unique_id, exc)
         return None
     finally:
-        try:
-            await client.disconnect(close_client=True)
-        except Exception:
-            pass
+        await _safe_disconnect(client)
 
 
 def check_streamer_is_live(unique_id: str) -> bool | None:
     normalized = normalize_tiktok_username(unique_id)
     if not normalized:
         return None
-    try:
+
+    def _run() -> bool | None:
         return asyncio.run(_check_is_live_async(normalized))
+
+    try:
+        # asyncio.run() est interdit si un event loop tourne déjà (ex. handler TikTokLive).
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return _run()
+        import concurrent.futures
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            return pool.submit(_run).result(timeout=45)
     except Exception as exc:
         logger.info('check_streamer_is_live @%s: %s', normalized, exc)
         return None
@@ -150,10 +171,7 @@ class _TikTokLiveCommentListener(threading.Thread):
             except Exception as exc:
                 logger.warning('TikTokLive connexion @%s échouée: %s', self.unique_id, exc)
             finally:
-                try:
-                    await client.disconnect(close_client=True)
-                except Exception:
-                    pass
+                await _safe_disconnect(client)
 
             if self.stop_event.is_set():
                 break
@@ -165,7 +183,7 @@ class _TikTokLiveCommentListener(threading.Thread):
                 delay = self._reconnect_delay
                 self._reconnect_delay = min(self._reconnect_delay * 1.5, _RECONNECT_MAX_SECONDS)
                 if self._session_saw_live:
-                    self._handle_stream_end('tiktoklive_disconnect')
+                    await asyncio.to_thread(self._handle_stream_end, 'tiktoklive_disconnect')
 
             logger.info(
                 'TikTokLive reconnexion @%s dans %.0fs (offline=%s)',
@@ -195,7 +213,8 @@ class _TikTokLiveCommentListener(threading.Thread):
         async def on_connect(_event: ConnectEvent) -> None:
             self._session_saw_live = True
             self._reconnect_delay = _RECONNECT_BASE_SECONDS
-            self._on_live_started(streamer)
+            # ORM Django = sync → hors de l'event loop TikTokLive.
+            await asyncio.to_thread(self._on_live_started, streamer)
 
         @client.on(CommentEvent)
         async def on_comment(event: CommentEvent) -> None:
@@ -203,11 +222,11 @@ class _TikTokLiveCommentListener(threading.Thread):
             if not payload.get('comment'):
                 return
             self._session_saw_live = True
-            self._process_comment(streamer, payload)
+            await asyncio.to_thread(self._process_comment, streamer, payload)
 
         @client.on(LiveEndEvent)
         async def on_live_end(_event: LiveEndEvent) -> None:
-            self._handle_stream_end('tiktoklive_live_end')
+            await asyncio.to_thread(self._handle_stream_end, 'tiktoklive_live_end')
 
         @client.on(DisconnectEvent)
         async def on_disconnect(_event: DisconnectEvent) -> None:

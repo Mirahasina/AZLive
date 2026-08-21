@@ -90,7 +90,7 @@ def process_jp_relances(*, force: bool = False) -> dict[str, Any]:
             expire_commande(commande)
             expirations.append(commande.id)
             logger.info(
-                'Commande #%s expirée (max relances atteint) — place libérée',
+                'Commande #%s expirée (max relances atteint) - place libérée',
                 commande.id,
             )
 

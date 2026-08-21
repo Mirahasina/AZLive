@@ -70,10 +70,12 @@ class FacebookLoginURLAPIView(APIView):
                 status=status.HTTP_503_SERVICE_UNAVAILABLE,
             )
 
+        force_raw = (request.query_params.get('force') or '').strip().lower()
+        force_login = force_raw in ('1', 'true', 'yes')
         state = generate_oauth_state()
         return Response(
             {
-                'auth_url': build_oauth_url(state),
+                'auth_url': build_oauth_url(state, force_login=force_login),
                 'state': state,
                 'redirect_uri': settings.FACEBOOK_REDIRECT_URI,
                 'scopes': settings.FACEBOOK_OAUTH_SCOPES.split(','),
@@ -221,10 +223,14 @@ class TikTokLoginURLAPIView(APIView):
                 status=status.HTTP_503_SERVICE_UNAVAILABLE,
             )
 
+        force_raw = (request.query_params.get('force') or '').strip().lower()
+        force_login = force_raw in ('1', 'true', 'yes')
         state, code_challenge = generate_tiktok_oauth_state()
         return Response(
             {
-                'auth_url': build_tiktok_oauth_url(state, code_challenge),
+                'auth_url': build_tiktok_oauth_url(
+                    state, code_challenge, force_login=force_login
+                ),
                 'state': state,
                 'redirect_uri': settings.TIKTOK_REDIRECT_URI,
                 'scopes': settings.TIKTOK_OAUTH_SCOPES.split(','),

@@ -32,7 +32,7 @@ def create_jp_commande(client, produit, live=None, canal='', comment_id=None, va
 
     Si le client a déjà une commande JP en attente pour la même déclinaison (même produit
     et même variante) *dans le même contexte* (même live, ou hors-live / article), on
-    réutilise cette commande au lieu d'en créer un doublon — le client n'envoie pas
+    réutilise cette commande au lieu d'en créer un doublon - le client n'envoie pas
     plusieurs JP, c'est une re-publication accidentelle. Un JP article ne doit jamais
     reprendre une commande live (et inversement) : les infos / codes sont distincts.
     """
@@ -347,10 +347,10 @@ def process_social_comment(
             lookup = {id_field: sender_id}
             defaults = {'nom': sender_name, 'telephone': '', 'adresse': ''}
             client, created = Client.objects.get_or_create(**lookup, defaults=defaults)
-            placeholder_names = {'Client Live', 'Client Facebook', 'Client TikTok'}
-            if not created and client.nom in placeholder_names and sender_name not in placeholder_names:
-                client.nom = sender_name
-                client.save(update_fields=['nom'])
+            from .message_humanizer import apply_platform_display_name
+
+            if not created:
+                apply_platform_display_name(client, sender_name)
 
             outbound = send_auto_reply_message(
                 client,
@@ -415,10 +415,10 @@ def process_social_comment(
     defaults = {'nom': sender_name, 'telephone': '', 'adresse': ''}
     client, created = Client.objects.get_or_create(**lookup, defaults=defaults)
 
-    placeholder_names = {'Client Live', 'Client Facebook', 'Client TikTok'}
-    if not created and client.nom in placeholder_names and sender_name not in placeholder_names:
-        client.nom = sender_name
-        client.save(update_fields=['nom'])
+    from .message_humanizer import apply_platform_display_name
+
+    if not created:
+        apply_platform_display_name(client, sender_name)
     commande = create_jp_commande(
         client,
         produit,

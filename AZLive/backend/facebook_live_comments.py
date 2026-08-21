@@ -101,7 +101,7 @@ def resolve_comment_sender(
         if page_id:
             fallback_name = f'Client Facebook (page {page_id})'
         logger.warning(
-            'Auteur masqué pour commentaire %s — capture JP avec id de repli %s',
+            'Auteur masqué pour commentaire %s - capture JP avec id de repli %s',
             comment_id,
             fallback_id,
         )
@@ -135,7 +135,7 @@ class _FacebookCommentListener(threading.Thread):
             while not self.stop_event.is_set():
                 try:
                     self._poll_once()
-                except Exception as exc:  # noqa: BLE001 — garder le thread vivant
+                except Exception as exc:  # noqa: BLE001 - garder le thread vivant
                     logger.exception(
                         'Erreur inattendue poller FB (live #%s): %s',
                         self.live_id,
@@ -155,9 +155,24 @@ class _FacebookCommentListener(threading.Thread):
             self.stop_event.set()
             return
 
+        # Live Facebook arrêté côté Meta → clôturer AZLive (comme TikTok).
+        from .facebook_live import cloturer_facebook_live, get_facebook_live_video_status
+
+        remote_status = get_facebook_live_video_status(self.live_video_id, self.access_token)
+        if remote_status and remote_status not in {'LIVE', 'LIVE_NOW'}:
+            logger.info(
+                'Live video Facebook %s statut=%s → clôture AZLive #%s',
+                self.live_video_id,
+                remote_status,
+                self.live_id,
+            )
+            cloturer_facebook_live(live, reason=f'facebook_status_{remote_status.lower()}')
+            self.stop_event.set()
+            return
+
         try:
             comments = _fetch_live_comments(self.live_video_id, self.access_token)
-        except Exception as exc:  # noqa: BLE001 — réseau/API : on log et on retentera.
+        except Exception as exc:  # noqa: BLE001 - réseau/API : on log et on retentera.
             logger.warning('Récupération commentaires FB échouée (live #%s): %s', self.live_id, exc)
             return
 
@@ -219,7 +234,7 @@ class _FacebookCommentListener(threading.Thread):
                     )
             except JPCaptureError as exc:
                 logger.info(
-                    'Commentaire FB non capturé (live #%s): %s — analysis=%s',
+                    'Commentaire FB non capturé (live #%s): %s - analysis=%s',
                     self.live_id,
                     exc.message,
                     (exc.payload or {}).get('ai_analysis'),

@@ -129,7 +129,10 @@ def provision_live_path(live, secure_stream_url: str) -> dict[str, Any]:
     whip_base = settings.MEDIAMTX_WHIP_BASE_URL.rstrip('/')
     return {
         'path': path,
-        'whip_url': f'{whip_base}/{path}/whip',
+        'whip_url': (
+            f'{whip_base}/{path}/whip'
+            f'?token={urllib.parse.quote(publish_token, safe="")}'
+        ),
         'publish_token': publish_token,
     }
 

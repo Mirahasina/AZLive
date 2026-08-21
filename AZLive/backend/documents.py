@@ -36,7 +36,7 @@ def build_facture_pdf(commande: Commande) -> bytes:
     prix = variante.prix_unitaire if variante else commande.get_prix_unitaire()
     quantite = commande.quantite_effective
     total = prix * quantite
-    code_jp = format_jp_code(code_for_commande(commande)) if code_for_commande(commande) else '—'
+    code_jp = format_jp_code(code_for_commande(commande)) if code_for_commande(commande) else '-'
 
     buffer = io.BytesIO()
     pdf = canvas.Canvas(buffer, pagesize=A4)
@@ -67,13 +67,13 @@ def build_facture_pdf(commande: Commande) -> bytes:
     y -= 16
     pdf.setFont('Helvetica', 10)
     vendeur_lines = [
-        vendeur.nom if vendeur else '—',
-        f'Contact : {vendeur.contact}' if vendeur and vendeur.contact else 'Contact : —',
+        vendeur.nom if vendeur else '-',
+        f'Contact : {vendeur.contact}' if vendeur and vendeur.contact else 'Contact : -',
     ]
     client_lines = [
-        client.nom or '—',
-        f'Tél : {client.telephone or "—"}',
-        f'Adresse : {client.adresse or "—"}',
+        client.nom or '-',
+        f'Tél : {client.telephone or "-"}',
+        f'Adresse : {client.adresse or "-"}',
     ]
     block_top = y
     for line in vendeur_lines:
@@ -93,9 +93,9 @@ def build_facture_pdf(commande: Commande) -> bytes:
     pdf.drawString(left, y, 'Livraison')
     y -= 16
     pdf.setFont('Helvetica', 10)
-    date_liv = client.date_livraison_preferee.strftime('%d/%m/%Y') if client.date_livraison_preferee else '—'
+    date_liv = client.date_livraison_preferee.strftime('%d/%m/%Y') if client.date_livraison_preferee else '-'
     heure_liv = (
-        client.heure_livraison_preferee.strftime('%H:%M') if client.heure_livraison_preferee else '—'
+        client.heure_livraison_preferee.strftime('%H:%M') if client.heure_livraison_preferee else '-'
     )
     pdf.drawString(left, y, f'Date souhaitée : {date_liv}    Heure : {heure_liv}')
     y -= 14
@@ -127,7 +127,7 @@ def build_facture_pdf(commande: Commande) -> bytes:
 
     designation = produit.nom
     if variante:
-        designation += f' — {variante.couleur} / {variante.taille}'
+        designation += f' - {variante.couleur} / {variante.taille}'
     designation += f'  ({code_jp})'
 
     pdf.setFont('Helvetica', 10)
@@ -158,7 +158,7 @@ def build_facture_pdf(commande: Commande) -> bytes:
     pdf.setFillColorRGB(0.25, 0.25, 0.25)
     pdf.drawString(left, y, 'Mode de paiement : à la livraison (sauf indication contraire).')
     y -= 14
-    pdf.drawString(left, y, 'Merci pour votre confiance — à bientôt sur le prochain live.')
+    pdf.drawString(left, y, 'Merci pour votre confiance - à bientôt sur le prochain live.')
     pdf.setFillColorRGB(0, 0, 0)
 
     # Pied de page
@@ -191,7 +191,7 @@ def build_etiquette_livraison_pdf(commande: Commande) -> bytes:
     date_liv = (
         client.date_livraison_preferee.strftime('%d/%m/%Y')
         if client.date_livraison_preferee
-        else '—'
+        else '-'
     )
     heure_liv = (
         client.heure_livraison_preferee.strftime('%H:%M')
@@ -251,13 +251,13 @@ def build_etiquette_livraison_pdf(commande: Commande) -> bytes:
     pdf.setFillColorRGB(0, 0, 0)
     y -= 5 * mm
     pdf.setFont('Helvetica-Bold', 12)
-    pdf.drawString(margin, y, (client.nom or '—')[:28])
+    pdf.drawString(margin, y, (client.nom or '-')[:28])
     y -= 5 * mm
     pdf.setFont('Helvetica-Bold', 11)
-    pdf.drawString(margin, y, client.telephone or '—')
+    pdf.drawString(margin, y, client.telephone or '-')
     y -= 5 * mm
     pdf.setFont('Helvetica', 9)
-    adresse = (client.adresse or '—').strip()
+    adresse = (client.adresse or '-').strip()
     # Wrap adresse sur 2 lignes max
     max_chars = 36
     if len(adresse) <= max_chars:
@@ -280,7 +280,7 @@ def build_etiquette_livraison_pdf(commande: Commande) -> bytes:
     pdf.setFillColorRGB(0, 0, 0)
     y -= 5 * mm
     pdf.setFont('Helvetica-Bold', 10)
-    pdf.drawString(margin, y, (produit.nom or '—')[:32])
+    pdf.drawString(margin, y, (produit.nom or '-')[:32])
     y -= 4.5 * mm
     pdf.setFont('Helvetica', 9)
     detail = f'Qté : {quantite}'

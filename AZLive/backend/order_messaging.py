@@ -69,7 +69,7 @@ def _claim_messenger_psid(commande: Commande, delivery: dict[str, Any]) -> None:
         return
     if Client.objects.filter(facebook_id=psid).exclude(pk=client.pk).exists():
         logger.warning(
-            'PSID %s déjà lié à un autre client — commande #%s non mise à jour',
+            'PSID %s déjà lié à un autre client - commande #%s non mise à jour',
             psid,
             commande.id,
         )
@@ -145,7 +145,7 @@ def _deliver_private_message(
             _log_delivery_failure(commande, delivery, context='jp_capture')
 
     elif canal == Message.CANAL_TIKTOK:
-        # TikTok DM officiel indisponible — journaliser pour envoi manuel / WhatsApp futur
+        # TikTok DM officiel indisponible - journaliser pour envoi manuel / WhatsApp futur
         logger.info(
             '[TIKTOK DM PENDING] commande #%s → @%s: %s',
             commande.id,
@@ -174,63 +174,24 @@ def build_jp_confirmation_message(commande: Commande) -> str:
     hello = greeting(client.nom)
 
     if not _order_is_eligible(commande):
-        intro = pick(
-            [
-                f"{hello} 😊 Voaray ny JP-nao ho an'ny '{produit.nom}'.",
-                f"{hello}! Efa azonay ny JP-nao ho an'ny '{produit.nom}'.",
-                f"{hello}! Tonga soa ny JP-nao ho an'ny '{produit.nom}'.",
-            ]
+        return (
+            f"{hello}! Voaray ny JP-nao '{produit.nom}' "
+            f"(liste d'attente nº{commande.ordre_jp}). "
+            f"Hilazanay anao raha vao misy toerana."
         )
-        attente = pick(
-            [
-                f"Fa efa misy nanao commande mialoha anao, ka ao amin'ny liste d'attente ianao aloha (numéro {commande.ordre_jp}).",
-                f"Saingy mbola misy olona eo alohanao, ka miandry kely ianao izao (numéro {commande.ordre_jp} amin'ny liste d'attente).",
-                f"Mbola eo am-piandrasana ny anjaranao ianao izao (numéro {commande.ordre_jp} amin'ny liste d'attente).",
-            ]
-        )
-        rassurance = pick(
-            [
-                "Hilazanay anao raha vao misy toerana. Misaotra amin'ny faharetana!",
-                "Raha vao misy malalaka dia tofandrenesinay anao. Misaotra e!",
-                "Aza manahy, holazainay anao raha vao tonga ny anjaranao.",
-            ]
-        )
-        return f'{intro} {attente} {rassurance}{emoji(prob=0.4)}'
 
-    intro = pick(
-        [
-            f"{hello} 😊 Voaray ny JP-nao ho an'ny '{produit.nom}' (Commande #{commande.id}).",
-            f"{hello}! Efa azonay ny JP-nao ho an'ny '{produit.nom}' (Commande #{commande.id}).",
-            f"{hello}! Tonga soa ny JP-nao ho an'ny '{produit.nom}' (Commande #{commande.id}).",
-        ]
+    return (
+        f"{hello}! Voaray ny JP-nao '{produit.nom}' (#{commande.id}). "
+        f"Alefaso : numéro, adresse, daty + ora, ary isa alainao."
     )
-    demande = pick(
-        [
-            "Mba alefaso aminay azafady ny anaranao, numéro, adresse, daty sy ora "
-            "hanaterana, ary firy no alainao.",
-            "Mba hahavita ny commande, omeo anay ny anaranao, numéro, adresse, daty sy "
-            "ora hanaterana, ary firy no alainao.",
-            "Lazao anay azafady ny anaranao, numéro, adresse, daty sy ora hanaterana, "
-            "ary firy no alainao.",
-        ]
-    )
-    souplesse = pick(
-        [
-            "Afaka soratanao tsikelikely ihany, tsy maika, tsy misy modèle tsy maintsy arahina.",
-            "Azonao zaraina amin'ny message maromaro, araka izay mora aminao.",
-            "Ataovy mora fotsiny, tsy voatery atao indray miaraka.",
-        ]
-    )
-    return f'{intro}\n\n{demande} {souplesse}{emoji(prob=0.3)}'
 
 
 FIELD_COMPLETION_PROMPTS = {
-    'nom': 'ny anaranao',
     'telephone': 'ny numéro-nao',
     'adresse': 'ny adresse-nao',
     'date_livraison': 'ny daty hanaterana',
     'heure_livraison': 'ny ora (ohatra 14h)',
-    'quantite': 'firy no alainao (ohatra 2)',
+    'quantite': 'isa no alainao (ohatra 2)',
 }
 
 
@@ -239,8 +200,9 @@ def build_completion_request_message(commande: Commande, missing_fields: list[st
 
     snapshot = _collected_fields_snapshot(commande)
     received = []
+    # Nom Facebook/TikTok : affiché mais jamais demandé.
     if snapshot.get('nom'):
-        received.append(f"anarana ({snapshot['nom']})")
+        received.append(f"anarana FB ({snapshot['nom']})")
     if snapshot.get('telephone'):
         received.append(f"numéro ({snapshot['telephone']})")
     if snapshot.get('adresse'):
@@ -250,7 +212,7 @@ def build_completion_request_message(commande: Commande, missing_fields: list[st
     if snapshot.get('heure_livraison'):
         received.append(f"ora ({snapshot['heure_livraison']})")
     if snapshot.get('quantite'):
-        received.append(f"firy ({snapshot['quantite']})")
+        received.append(f"isa ({snapshot['quantite']})")
 
     missing_labels = [FIELD_COMPLETION_PROMPTS[field] for field in missing_fields if field in FIELD_COMPLETION_PROMPTS]
     intro = f'{thanks()}!'
@@ -474,24 +436,29 @@ def send_jp_confirmation_message(
 def build_order_cancelled_message(commande: Commande) -> str:
     client = commande.client
     produit = commande.produit
-    intro = pick(
-        [
-            f"Ekena {client.nom}, nofoanana ny commande-nao '{produit.nom}' (#{commande.id}).",
-            f"Azo {client.nom}, nesorina ny commande-nao '{produit.nom}' (#{commande.id}).",
-            f"Ekena tsara, voafoana ny commande-nao '{produit.nom}' (#{commande.id}).",
-        ]
+    prenom = first_name(client.nom) or 'tompoko'
+    return (
+        f"Ekena {prenom}. Commande '{produit.nom}' (#{commande.id}) voafoana. "
+        f"Raha te-hividy indray : « mbola te-hividy »."
     )
-    cloture = pick(
-        [
-            "Raha nisy diso na te-hanao commande vaovao ianao, valio « mbola te-hividy » eto. Misaotra!",
-            "Raha mbola te-hividy ianao, soraty « reprendre » na « mbola te-hividy » eto. Misaotra e!",
-        ]
-    )
-    return f'{intro} {cloture}'
 
 
 def send_order_cancelled_message(commande: Commande) -> dict[str, Any]:
     content = build_order_cancelled_message(commande)
+    delivery = _deliver_private_message(commande, content)
+    return {'content': content, 'delivery': delivery}
+
+
+def build_bulk_cancelled_message(client, *, count: int) -> str:
+    prenom = first_name(client.nom) or 'tompoko'
+    return (
+        f"Ekena {prenom}. Voafafa ny {count} commandes-nao. "
+        f"Raha te-hividy indray : « mbola te-hividy »."
+    )
+
+
+def send_bulk_cancelled_message(client, *, count: int, commande: Commande) -> dict[str, Any]:
+    content = build_bulk_cancelled_message(client, count=count)
     delivery = _deliver_private_message(commande, content)
     return {'content': content, 'delivery': delivery}
 
@@ -508,7 +475,7 @@ def build_reprise_message(commande: Commande, *, ancienne_id: int, outcome: str)
     )
     regle = (
         f"Ny commande #{ancienne_id} efa foana. Tsy azonay alaina indray ny toerana "
-        f"nomena ny manaraka — ka manomboka commande vaovao #{commande.id} ianao."
+        f"nomena ny manaraka - ka manomboka commande vaovao #{commande.id} ianao."
     )
     if outcome == 'confirme':
         suite = pick(
@@ -523,7 +490,7 @@ def build_reprise_message(commande: Commande, *, ancienne_id: int, outcome: str)
             f"ianao (numéro {commande.ordre_jp})."
         )
     elif outcome == 'stock_partiel':
-        suite = "Mbola misy sisa kely — jereo ny safidy manaraka (alaina ny sisa sa miandry)."
+        suite = "Mbola misy sisa kely - jereo ny safidy manaraka (alaina ny sisa sa miandry)."
     elif outcome == 'recap':
         suite = "Jereo ny infos teo ambany ; raha mety, valio « eka » / « ok », na « hanova … » raha mila ovaina."
     else:
@@ -557,7 +524,7 @@ def build_reprise_recap_message(commande: Commande) -> str:
     )
     lignes = []
     if snapshot.get('nom'):
-        lignes.append(f"• Anarana : {snapshot['nom']}")
+        lignes.append(f"• Anarana (Facebook) : {snapshot['nom']}")
     if snapshot.get('telephone'):
         lignes.append(f"• Numéro : {snapshot['telephone']}")
     if snapshot.get('adresse'):
@@ -572,8 +539,10 @@ def build_reprise_recap_message(commande: Commande) -> str:
     suite = pick(
         [
             "Raha mety izany, valio fotsiny « eka » na « ok ». "
-            "Raha te-hanova : « hanova adresse … » na « ovaina ny numéro … » ohatra.",
-            "Mety ve ireo? Valio « eka » raha ekena, na « hanova … » raha mila ovaina.",
+            "Raha te-hanova numéro/adresse/daty : « hanova adresse … » ohatra "
+            "(ny anarana Facebook tsy ovaina).",
+            "Mety ve ireo? Valio « eka » raha ekena, na « hanova numéro/adresse … » "
+            "(anarana Facebook tsy ovaina).",
         ]
     )
     return f'{intro}\n\n{recap}\n\n{suite}{emoji(prob=0.35)}'
@@ -627,11 +596,11 @@ def build_vendor_confirmation_notification(commande: Commande) -> str:
     qty = commande.quantite_effective
 
     lines = [
-        f" Commande #{commande.id} — {client.nom}",
+        f" Commande #{commande.id} - {client.nom}",
         f"   Produit : {produit.nom}{variante_label} × {qty}",
         f"   Montant : {prix_total:,.0f} Ar",
-        f"   Tél : {client.telephone or '—'}",
-        f"   Adresse : {client.adresse or '—'}",
+        f"   Tél : {client.telephone or '-'}",
+        f"   Adresse : {client.adresse or '-'}",
     ]
     if client.date_livraison_preferee:
         slot = client.date_livraison_preferee.strftime('%d/%m/%Y')
@@ -714,7 +683,7 @@ def build_thanks_ack_message(commande: Commande | None = None, client=None) -> s
         suite = pick(
             [
                 'Efa voafoana ny commande. Raha mbola te-hividy ianao, soraty « mbola te-hividy ».',
-                'Voaray ny fisaorana. Ny commande efa foana — eto foana izahay raha mila zavatra.',
+                'Voaray ny fisaorana. Ny commande efa foana - eto foana izahay raha mila zavatra.',
             ]
         )
         return f'{intro} {suite}{emoji(prob=0.4)}'
@@ -765,7 +734,7 @@ def build_modification_ack_message(
         return (
             f"{greeting(client.nom)}! Azonao ovaina ny infos. "
             f"Ohatra : « hanova adresse Ivato », « ovaina ny numéro 034… », "
-            f"« hanova daty zoma maraina », « hanova firy 2 ».{emoji(prob=0.3)}"
+            f"« hanova daty zoma maraina », « hanova isa 2 ».{emoji(prob=0.3)}"
         )
     labels = ', '.join(changed_fields) if changed_fields else 'ny infos'
     intro = pick(
@@ -813,7 +782,7 @@ def build_modification_revert_message(commande: Commande, *, reprise: bool = Fal
         suite = pick(
             [
                 f"Ny commande #{commande.id} dia mbola velona.",
-                "Tsy voafafa ny commande — ny fanovana ihany no foanana.",
+                "Tsy voafafa ny commande - ny fanovana ihany no foanana.",
             ]
         )
     return f'{intro} {suite}{emoji(prob=0.35)}'
@@ -859,7 +828,7 @@ def build_auto_reply_prix(client, *, produit=None, vendeur=None, live=None) -> s
     """Réponse automatique à une question sur le prix.
 
     Le prix est toujours renseigné en BDD (champ obligatoire à la création du produit).
-    On affiche donc le vrai prix — pour un produit précis ou la liste des produits du live.
+    On affiche donc le vrai prix - pour un produit précis ou la liste des produits du live.
     """
     from .models import Produit, Variante
 
@@ -924,12 +893,12 @@ def build_auto_reply_stock(client, *, produit=None, vendeur=None) -> str:
             dispo = pick([
                 f"Eny, mbola misy ny '{produit.nom}' ({stock_total} sisa).",
                 f"Mbola misy ny '{produit.nom}', fa mandehana haingana!",
-                f"Mbola available ny '{produit.nom}' — {stock_total} no sisa.",
+                f"Mbola available ny '{produit.nom}' - {stock_total} no sisa.",
             ])
         else:
             dispo = pick([
                 f"Miala tsiny, lany ny '{produit.nom}' amin'izao fotoana izao.",
-                f"Voafaritra ny '{produit.nom}' — tsy misy intsony izao.",
+                f"Voafaritra ny '{produit.nom}' - tsy misy intsony izao.",
                 f"Lany ny stock ho an'ny '{produit.nom}'. Jereo ny entana hafa!",
             ])
     else:
@@ -953,7 +922,7 @@ def build_auto_reply_lieu(client, *, vendeur=None) -> str:
 
     lieu_info = ''
     if vendeur and getattr(vendeur, 'contact', ''):
-        lieu_info = f" — {vendeur.contact}"
+        lieu_info = f" - {vendeur.contact}"
 
     livraison = pick([
         f"{hello}! Manao livraison izahay{lieu_info}.",
@@ -1055,7 +1024,7 @@ def build_human_assistance_seller_notification(
     return pick(
         [
             f"Fanairana : {nom} {motif} ({channel}). Hafatra : « {extrait} »",
-            f"{nom} {motif}. Jereo fa valio izy haingana — « {extrait} » ({channel})",
+            f"{nom} {motif}. Jereo fa valio izy haingana - « {extrait} » ({channel})",
             f"Mila mpanampy olona i {nom} : « {extrait} » ({channel})",
         ]
     )

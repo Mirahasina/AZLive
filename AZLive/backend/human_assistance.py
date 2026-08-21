@@ -188,7 +188,7 @@ def handle_human_assistance_request(
         )
     else:
         logger.warning(
-            'Assistance humaine sans vendeur résolu — client %s, canal %s',
+            'Assistance humaine sans vendeur résolu - client %s, canal %s',
             client.id,
             channel,
         )

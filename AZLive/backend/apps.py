@@ -45,6 +45,7 @@ class BackendConfig(AppConfig):
             if not recover_social:
                 return
 
+            from .facebook_live import reconcile_ended_facebook_lives
             from .facebook_live_comments import recover_facebook_comment_listeners
             from .tiktok_live import reconcile_ended_tiktok_lives, recover_tiktok_listeners
 
@@ -68,6 +69,13 @@ class BackendConfig(AppConfig):
                     logger.info('Watchdog: %s live(s) TikTok clôturé(s)/archivé(s)', ended)
             except Exception:
                 logger.exception('Watchdog: échec reconcile_ended_tiktok_lives')
+
+            try:
+                ended_fb = reconcile_ended_facebook_lives()
+                if ended_fb:
+                    logger.info('Watchdog: %s live(s) Facebook clôturé(s)/archivé(s)', ended_fb)
+            except Exception:
+                logger.exception('Watchdog: échec reconcile_ended_facebook_lives')
 
         def _watchdog():
             interval = float(os.environ.get('AZLIVE_LISTENER_WATCHDOG_SECONDS', '60'))

@@ -3,13 +3,26 @@ import random
 PLACEHOLDER_NAMES = {'Client Live', 'Client Facebook', 'Client TikTok'}
 
 
+def is_placeholder_name(nom: str | None) -> bool:
+    cleaned = (nom or '').strip()
+    if not cleaned:
+        return True
+    if cleaned in PLACEHOLDER_NAMES:
+        return True
+    # Ex. « Client Facebook (auteur masqué) »
+    return cleaned.startswith('Client Facebook') or cleaned.startswith('Client TikTok')
+
+
 def first_name(nom: str | None) -> str:
-    if not nom:
+    if is_placeholder_name(nom):
         return ''
     cleaned = nom.strip()
-    if cleaned in PLACEHOLDER_NAMES:
-        return ''
     return cleaned.split()[0]
+
+
+def platform_display_name(nom: str | None) -> str:
+    """Prénom Facebook/TikTok pour les messages ; vide si placeholder."""
+    return first_name(nom)
 
 
 def pick(options: list[str]) -> str:
@@ -46,3 +59,15 @@ def emoji(prob: float = 0.5, choices: list[str] | None = None) -> str:
     if random.random() < prob:
         return ' ' + random.choice(choices)
     return ''
+
+
+def apply_platform_display_name(client, platform_name: str | None) -> bool:
+    """Aligne client.nom sur le nom Facebook/TikTok (jamais un placeholder)."""
+    name = (platform_name or '').strip()
+    if is_placeholder_name(name):
+        return False
+    if (client.nom or '').strip() == name:
+        return False
+    client.nom = name
+    client.save(update_fields=['nom'])
+    return True

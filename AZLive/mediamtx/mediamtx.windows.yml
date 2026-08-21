@@ -1,4 +1,4 @@
-# Configuration MediaMTX pour AZLive — VERSION WINDOWS (binaire natif)
+# Configuration MediaMTX pour AZLive - VERSION WINDOWS (binaire natif)
 #
 # Identique à mediamtx.yml, sauf que MediaMTX tourne en natif (pas dans Docker) :
 #   - authHTTPAddress pointe vers localhost (et non host.docker.internal)

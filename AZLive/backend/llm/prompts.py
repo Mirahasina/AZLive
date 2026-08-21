@@ -1,8 +1,8 @@
 """Prompts (instructions) envoyés au LLM.
 
 Optimisés pour du texte MIXTE malgache + français : glossaire explicite,
-normalisation des couleurs/tailles, exemples (few-shot), et — pour les
-commentaires — injection du catalogue produits pour que le LLM choisisse
+normalisation des couleurs/tailles, exemples (few-shot), et - pour les
+commentaires - injection du catalogue produits pour que le LLM choisisse
 directement la bonne variante.
 """
 

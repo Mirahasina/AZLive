@@ -275,7 +275,7 @@ def _parse_relative_day_date(value: str, reference: date | None = None) -> date 
     normalized = _normalize_text(value or '')
     normalized = CONNECTOR_PATTERN.sub(' ', normalized)
     normalized = re.sub(r'apres[\s\-]?demain', 'apres demain', normalized)
-    normalized = re.sub(r'[\s,;/\-–—]+', ' ', normalized).strip()
+    normalized = re.sub(r'[\s,;/\-–-]+', ' ', normalized).strip()
     match = RELATIVE_DAY_PATTERN.search(normalized)
     if not match:
         return None
@@ -301,7 +301,7 @@ def _parse_weekday_date(value: str, reference: date | None = None) -> date | Non
     reference = reference or timezone.localdate()
     normalized = _normalize_text(value or '')
     normalized = CONNECTOR_PATTERN.sub(' ', normalized)
-    normalized = re.sub(r'[\s,;/\-–—]+', ' ', normalized).strip()
+    normalized = re.sub(r'[\s,;/\-–-]+', ' ', normalized).strip()
     match = WEEKDAY_PATTERN.search(normalized)
     if not match:
         return None
@@ -387,7 +387,7 @@ def _extract_inline_date_time(value: str) -> tuple[str | None, str | None]:
 
     # Nettoie les connecteurs restants (« à », « amin'ny », « ami'ny », tirets…).
     remaining = CONNECTOR_PATTERN.sub(' ', remaining)
-    remaining = re.sub(r'[\s,;/\-–—]+', ' ', remaining).strip()
+    remaining = re.sub(r'[\s,;/\-–-]+', ' ', remaining).strip()
 
     if remaining and _looks_like_date(remaining):
         date_part = remaining
@@ -524,7 +524,7 @@ def _scrub_extracted_text(text: str, *tokens: str | None) -> str:
     scrub = DELIVERY_PREFIX.sub('', scrub)
     scrub = re.sub(r'\b(?:livraison|delivery|aterina|ao|isa|qty|qte|am|@)\b', ' ', scrub, flags=re.I)
     scrub = CONNECTOR_PATTERN.sub(' ', scrub)
-    return re.sub(r'[\s,;/\-–—]+', ' ', scrub).strip()
+    return re.sub(r'[\s,;/\-–-]+', ' ', scrub).strip()
 
 
 def _is_greeting_token(text: str) -> bool:
@@ -754,7 +754,7 @@ def _parse_phone_adresse_datetime_commas(text: str) -> dict[str, str]:
 
 
 def _split_confirmation_lines(text: str) -> list[str]:
-    """Découpe un message en lignes — y compris format virgules sur une seule ligne."""
+    """Découpe un message en lignes - y compris format virgules sur une seule ligne."""
     cleaned = (text or '').strip()
     if not cleaned:
         return []
@@ -1031,9 +1031,8 @@ def claim_masked_facebook_client(
         return None
 
     client.facebook_id = real_facebook_id
-    if client.nom.startswith('Client Facebook'):
-        client.nom = 'Client Facebook'
-    client.save(update_fields=['facebook_id', 'nom'])
+    # Ne pas écraser un vrai nom Facebook déjà connu par un placeholder.
+    client.save(update_fields=['facebook_id'])
     return client
 
 
@@ -1058,6 +1057,158 @@ def find_cancellable_commande(client: Client, vendeur: Vendeur | None = None) ->
     return queryset.first()
 
 
+def find_all_cancellable_commandes(
+    client: Client,
+    vendeur: Vendeur | None = None,
+) -> list[Commande]:
+    """Commandes annulables du même live que la dernière (évite d'annuler d'anciens lives)."""
+    primary = find_cancellable_commande(client, vendeur=vendeur)
+    if not primary:
+        return []
+    queryset = (
+        Commande.objects.select_related('produit', 'produit__vendeur', 'client', 'variante', 'live')
+        .filter(client=client, statut__in=CANCELLABLE_STATUSES)
+        .order_by('-date_creation')
+    )
+    if vendeur:
+        queryset = queryset.filter(produit__vendeur=vendeur)
+    if primary.live_id:
+        queryset = queryset.filter(live_id=primary.live_id)
+    else:
+        return [primary]
+    return list(queryset)
+
+
+def apply_commande_cancellation(
+    commande: Commande,
+    *,
+    inbound_text: str = '',
+    canal: str | None = None,
+    record_inbound: bool = True,
+    notify: bool = True,
+) -> dict[str, Any]:
+    """Passe une commande en annulé + message client (sans re-tester le regex)."""
+    if commande.statut not in CANCELLABLE_STATUSES:
+        raise OrderConfirmationError(
+            f'La commande #{commande.id} ne peut plus être annulée '
+            f'(statut : {commande.get_statut_display()}).',
+            status_code=409,
+        )
+
+    with transaction.atomic():
+        # of=('self',) : Postgres refuse FOR UPDATE sur le côté nullable d'un OUTER JOIN
+        # (variante / live peuvent être null).
+        commande = (
+            Commande.objects.select_for_update(of=('self',))
+            .select_related('produit', 'produit__vendeur', 'client', 'variante', 'live')
+            .get(pk=commande.pk)
+        )
+        if commande.statut not in CANCELLABLE_STATUSES:
+            raise OrderConfirmationError(
+                f'La commande #{commande.id} ne peut plus être annulée '
+                f'(statut : {commande.get_statut_display()}).',
+                status_code=409,
+            )
+
+        client = commande.client
+        canal_message = canal or detect_client_channel(client)
+        if record_inbound and inbound_text:
+            already = Message.objects.filter(
+                commande=commande,
+                contenu=inbound_text,
+                direction=Message.DIRECTION_INBOUND,
+            ).exists()
+            if not already:
+                Message.objects.create(
+                    commande=commande,
+                    contenu=inbound_text,
+                    numero_relance=0,
+                    direction=Message.DIRECTION_INBOUND,
+                    canal=canal_message,
+                )
+
+        commande.statut = Commande.STATUT_ANNULE
+        commande.save(update_fields=['statut'])
+        _clear_modification_snapshot(commande)
+
+    # Notifier HORS transaction : un échec Messenger ne doit pas annuler le statut.
+    outbound: dict[str, Any] = {'content': None, 'delivery': None}
+    if notify:
+        from .order_messaging import send_order_cancelled_message
+
+        try:
+            outbound = send_order_cancelled_message(commande)
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                'Notification annulation échouée pour commande #%s (statut déjà annulé)',
+                commande.pk,
+            )
+            outbound = {'content': None, 'delivery': {'sent': False, 'error': 'notify_failed'}}
+
+    return {
+        'status': 'Commande annulée',
+        'annule': True,
+        'complet': False,
+        'commande': CommandeSerializer(commande).data,
+        'client': _client_snapshot(commande.client),
+        'message_annulation': outbound.get('content'),
+        'message_delivery': outbound.get('delivery'),
+    }
+
+
+def cancel_client_active_commandes(
+    client: Client,
+    *,
+    vendeur: Vendeur | None = None,
+    inbound_text: str = '',
+    canal: str | None = None,
+) -> dict[str, Any]:
+    """Annule toutes les commandes encore annulables du client (pas seulement la dernière)."""
+    commandes = find_all_cancellable_commandes(client, vendeur=vendeur)
+    if not commandes:
+        raise OrderConfirmationError(
+            'Aucune commande active à annuler pour ce client.',
+            status_code=404,
+        )
+
+    if len(commandes) == 1:
+        return apply_commande_cancellation(
+            commandes[0],
+            inbound_text=inbound_text,
+            canal=canal,
+            record_inbound=True,
+            notify=True,
+        )
+
+    results = []
+    for index, commande in enumerate(commandes):
+        results.append(
+            apply_commande_cancellation(
+                commande,
+                inbound_text=inbound_text if index == 0 else '',
+                canal=canal,
+                record_inbound=(index == 0),
+                notify=False,
+            )
+        )
+
+    from .order_messaging import send_bulk_cancelled_message
+
+    outbound = send_bulk_cancelled_message(client, count=len(results), commande=commandes[0])
+    first = results[0]
+    return {
+        'status': f'{len(results)} commandes annulées',
+        'annule': True,
+        'complet': False,
+        'annulees_count': len(results),
+        'commande': first.get('commande'),
+        'commandes': [r.get('commande') for r in results],
+        'client': first.get('client'),
+        'message_annulation': outbound.get('content'),
+        'message_delivery': outbound.get('delivery'),
+    }
+
+
 def _stock_remaining_for(commande: Commande) -> int | None:
     """Stock visible pour cette commande (0 si ce n'est pas encore son tour).
 
@@ -1073,28 +1224,63 @@ def _stock_remaining_for(commande: Commande) -> int | None:
 
 def cancel_commande_public(commande: Commande) -> dict[str, Any]:
     """Annule une commande depuis le formulaire public (JP / confirmée / préparée)."""
+    result = apply_commande_cancellation(commande, record_inbound=False)
+    result['commande_id'] = commande.id
+    return result
+
+
+@transaction.atomic
+def adjust_commande_quantite_public(commande: Commande, new_qty: int) -> dict[str, Any]:
+    """Réduit la quantité d'une commande confirmée/préparée (jamais plus que l'actuelle).
+
+    new_qty == 0 → annulation complète.
+    """
     if commande.statut not in CANCELLABLE_STATUSES:
         raise OrderConfirmationError(
-            f'La commande #{commande.id} ne peut plus être annulée '
+            f'La commande #{commande.id} ne peut plus être modifiée '
             f'(statut : {commande.get_statut_display()}).',
             status_code=409,
         )
+    if new_qty < 0:
+        raise OrderConfirmationError('Quantité invalide.', status_code=400)
 
-    commande.statut = Commande.STATUT_ANNULE
-    commande.save(update_fields=['statut'])
+    commande = (
+        Commande.objects.select_for_update(of=('self',))
+        .select_related('produit', 'variante', 'client')
+        .get(pk=commande.pk)
+    )
+    current = commande.quantite_effective
+    if new_qty == 0:
+        return cancel_commande_public(commande)
+    if new_qty > current:
+        raise OrderConfirmationError(
+            f'Impossible d\'augmenter la quantité (max {current}). '
+            f'Pour commander davantage, faites un nouveau JP sur le live.',
+            status_code=400,
+        )
+    if new_qty == current:
+        return {
+            'status': 'Quantité inchangée',
+            'annule': False,
+            'quantite': current,
+            'commande_id': commande.id,
+            'commande': CommandeSerializer(commande).data,
+        }
 
-    from .order_messaging import send_order_cancelled_message
-
-    outbound = send_order_cancelled_message(commande)
+    delta = current - new_qty
+    # Stock réservé uniquement pour les commandes déjà confirmées / préparées.
+    if commande.statut in (Commande.STATUT_CONFIRME, Commande.STATUT_PREPARE):
+        commande._adjust_variante_stock(delta)
+    commande.quantite = new_qty
+    commande.save(update_fields=['quantite'])
     return {
-        'status': 'Commande annulée',
-        'annule': True,
+        'status': 'Quantité mise à jour',
+        'annule': False,
+        'quantite': new_qty,
         'commande_id': commande.id,
         'commande': CommandeSerializer(commande).data,
-        'message_annulation': outbound.get('content'),
-        'message_delivery': outbound.get('delivery'),
+        'client': _client_snapshot(commande.client),
     }
-
 
 def resolve_page_for_commande(commande: Commande) -> PageFacebook | None:
     vendeur = commande.produit.vendeur
@@ -1194,17 +1380,23 @@ def link_messenger_sender_to_client(sender_id: str, vendeur: Vendeur | None) -> 
 
 CANCELLATION_PATTERNS = [
     re.compile(r'\ban+u+l', re.IGNORECASE),
+    re.compile(r'\bcancel(?:l?er|led|ation)?\b', re.IGNORECASE),
     re.compile(r'\bje\s+(?:ne\s+)?(?:veux|prends?|prend)\s+plus\b', re.IGNORECASE),
     re.compile(r'\bne\s+(?:veux|prends?|prend)\s+plus\b', re.IGNORECASE),
     re.compile(r'\bplus\s+besoin\b', re.IGNORECASE),
     re.compile(r'\bnon\s+merci\b', re.IGNORECASE),
+    re.compile(r'\bstop\s+(?:commande|order|jp)\b', re.IGNORECASE),
     # Malagasy
     re.compile(r'\btsy\s+(?:te|tia|mila|ila|ilaiko|ala?iko|maka|haka|mividy|hividy|haiko|alo)\b', re.IGNORECASE),
     re.compile(r'\bala?iko\s+(?:ndray|indray|intsony)\b', re.IGNORECASE),
     re.compile(r'\btsy\s+mila\s+intsony\b', re.IGNORECASE),
+    re.compile(r'\btsy\s+mety(?:\s+intsony)?\b', re.IGNORECASE),
+    re.compile(r'\btsy\s+te\s+hitohy\b', re.IGNORECASE),
     re.compile(r'\b(?:ndray|indray)\s+(?:leizy|ilay)\b', re.IGNORECASE),
     re.compile(r'\bfoan[ao]\b', re.IGNORECASE),
+    re.compile(r'\bafoana\b', re.IGNORECASE),
     re.compile(r'\besory\b', re.IGNORECASE),
+    re.compile(r'\bnesory\b', re.IGNORECASE),
     re.compile(r'\bajanon[ay]\b', re.IGNORECASE),
     re.compile(r'\bavelao\b', re.IGNORECASE),
     re.compile(r'^\s*tsia\s*$', re.IGNORECASE),
@@ -1214,7 +1406,7 @@ CANCELLATION_PATTERNS = [
 
 
 def _is_modification_cancellation(text: str) -> bool:
-    """Annuler la dernière modification — pas la commande entière."""
+    """Annuler la dernière modification - pas la commande entière."""
     cleaned = (text or '').strip()
     if not cleaned:
         return False
@@ -1293,6 +1485,9 @@ CONFIRMATION_ACK_PATTERNS = [
 def _looks_like_modification(text: str) -> bool:
     cleaned = (text or '').strip()
     if not cleaned:
+        return False
+    # Annulation commande > modification (évite « tsy te + diso » → modif).
+    if _is_cancellation(cleaned):
         return False
     normalized = _normalize_text(cleaned)
     return any(p.search(cleaned) or p.search(normalized) for p in MODIFICATION_PATTERNS)
@@ -1400,7 +1595,7 @@ def reopen_after_cancel(cancelled: Commande) -> dict[str, Any]:
             outcome='infos',
         )
         return {
-            'status': 'Reprise — nouvelle commande créée',
+            'status': 'Reprise - nouvelle commande créée',
             'reprise': True,
             'complet': False,
             'ancienne_commande_id': cancelled.id,
@@ -1421,7 +1616,7 @@ def reopen_after_cancel(cancelled: Commande) -> dict[str, Any]:
 
     if _order_is_eligible(commande):
         return {
-            'status': 'Reprise — confirmez vos informations',
+            'status': 'Reprise - confirmez vos informations',
             'reprise': True,
             'complet': False,
             'attente_confirmation': True,
@@ -1438,7 +1633,7 @@ def reopen_after_cancel(cancelled: Commande) -> dict[str, Any]:
 
         offer = send_stock_partial_offer_message(commande, available)
         return {
-            'status': 'Reprise — stock partiel proposé',
+            'status': 'Reprise - stock partiel proposé',
             'reprise': True,
             'complet': False,
             'attente_confirmation': True,
@@ -1454,7 +1649,7 @@ def reopen_after_cancel(cancelled: Commande) -> dict[str, Any]:
 
     wait = send_waiting_with_info_message(commande)
     return {
-        'status': "Reprise — en liste d'attente",
+        'status': "Reprise - en liste d'attente",
         'reprise': True,
         'complet': False,
         'en_attente': True,
@@ -1497,14 +1692,6 @@ FIELD_UPDATE_PATTERNS = [
         re.compile(
             r'(?:hanova|ovaina|ovay|ova|soloina|soloy|modifi(?:er|e)|chang(?:er|e)|corrige[rz]?)\s+'
             r'(?:ny\s+)?(?:ora|heure|time)\s*[:\-]?\s*(.+)$',
-            re.IGNORECASE | re.DOTALL,
-        ),
-    ),
-    (
-        'nom',
-        re.compile(
-            r'(?:hanova|ovaina|ovay|ova|soloina|soloy|modifi(?:er|e)|chang(?:er|e)|corrige[rz]?)\s+'
-            r'(?:ny\s+)?(?:anarana|nom)\s*[:\-]?\s*(.+)$',
             re.IGNORECASE | re.DOTALL,
         ),
     ),
@@ -1620,7 +1807,7 @@ def _has_pending_ahead(commande: Commande) -> bool:
 def _available_stock_for_commande(commande: Commande) -> int:
     """Stock utilisable pour cette commande : uniquement à son tour (tête de file).
 
-    Tant qu'un JP devant est encore ouvert, le client n'a pas la main — même s'il
+    Tant qu'un JP devant est encore ouvert, le client n'a pas la main - même s'il
     resterait du stock « en théorie » après la quantité du premier.
     """
     if _has_pending_ahead(commande):
@@ -1725,12 +1912,14 @@ def _ensure_paiement(commande: Commande) -> Paiement:
 
 _CLIENT_PLACEHOLDER_NAMES = frozenset({'Client Live', 'Client Facebook', 'Client TikTok'})
 
-_ORDER_THREAD_FIELD_KEYS = ('nom', 'telephone', 'adresse', 'date_livraison', 'heure_livraison')
+_ORDER_THREAD_FIELD_KEYS = ('telephone', 'adresse', 'date_livraison', 'heure_livraison')
 
 
 def _client_fields_as_collected(client: Client) -> dict[str, str]:
     collected: dict[str, str] = {}
-    if client.nom and client.nom not in _CLIENT_PLACEHOLDER_NAMES:
+    from .message_humanizer import is_placeholder_name
+
+    if client.nom and not is_placeholder_name(client.nom):
         collected['nom'] = client.nom
     if client.telephone:
         collected['telephone'] = client.telephone
@@ -1789,12 +1978,8 @@ def _cancelled_predecessor_for_reprise(commande: Commande) -> Commande | None:
 def _predecessor_had_complete_infos(cancelled: Commande) -> bool:
     """La commande annulée avait déjà toutes les infos dans son fil MP."""
     thread = _fields_from_commande_inbounds(cancelled)
-    has_nom = bool(thread.get('nom')) or (
-        cancelled.client.nom and cancelled.client.nom not in _CLIENT_PLACEHOLDER_NAMES
-    )
     return bool(
-        has_nom
-        and thread.get('telephone')
+        thread.get('telephone')
         and thread.get('adresse')
         and thread.get('date_livraison')
         and thread.get('heure_livraison')
@@ -1840,7 +2025,7 @@ def _reprise_has_info_update(parsed_data: dict[str, str], inbound_text: str) -> 
 
 
 class _ThreadPartialClient:
-    """État cumulé du fil MP uniquement — jamais l'ancien profil Client.
+    """État cumulé du fil MP uniquement - jamais l'ancien profil Client.
 
     Si on pré-remplit ``nom`` depuis le Client, la relecture du message qui a fourni
     ce nom le reclasse en adresse (nom déjà « connu »).
@@ -1855,9 +2040,10 @@ class _ThreadPartialClient:
 
 
 def _apply_thread_field(partial: _ThreadPartialClient, key: str, value: str) -> None:
+    # Nom plateforme : jamais pris depuis un MP.
     if key == 'nom':
-        partial.nom = value
-    elif key == 'telephone':
+        return
+    if key == 'telephone':
         partial.telephone = _normalize_phone(value) or value
     elif key == 'adresse':
         partial.adresse = value
@@ -1872,9 +2058,12 @@ def _apply_thread_field(partial: _ThreadPartialClient, key: str, value: str) -> 
 
 
 def _is_non_info_inbound(text: str) -> bool:
-    """Messages de contrôle (reprise, eka, annulation…) — pas des infos livraison."""
+    """Messages de contrôle (reprise, eka, annulation…) - pas des infos livraison."""
     cleaned = (text or '').strip()
     if not cleaned:
+        return True
+    # Ancienne note système du formulaire public (ne doit jamais être parsée en fiche client).
+    if cleaned.lower().startswith('informations transmises via le formulaire'):
         return True
     if _looks_like_reprise(cleaned):
         return True
@@ -1889,6 +2078,26 @@ def _is_non_info_inbound(text: str) -> bool:
     return False
 
 
+def _drop_client_name_from_parse(parsed: dict[str, str]) -> dict[str, str]:
+    """Le nom Facebook/TikTok n'est jamais saisi en MP.
+
+    Une ligne texte seule autrefois classée « nom » devient l'adresse
+    (ex. « Bypass » après un JP déjà nommé).
+    """
+    cleaned = {key: value for key, value in parsed.items() if value}
+    orphan_nom = cleaned.pop('nom', None)
+    if orphan_nom and not cleaned.get('adresse'):
+        if (
+            not _looks_like_date(orphan_nom)
+            and not _looks_like_phone(orphan_nom)
+            and not _looks_like_time(orphan_nom)
+            and not _is_quantity_line(orphan_nom)
+            and not _looks_like_modification(orphan_nom)
+        ):
+            cleaned['adresse'] = _normalize_address_segment(orphan_nom)
+    return cleaned
+
+
 def _fields_from_commande_inbounds(commande: Commande) -> dict[str, str]:
     """Champs explicitement fournis dans les MP entrants de cette commande."""
     merged: dict[str, str] = {}
@@ -1899,24 +2108,22 @@ def _fields_from_commande_inbounds(commande: Commande) -> dict[str, str]:
         if _looks_like_modification(msg.contenu):
             mod_fields = _extract_modification_fields(msg.contenu)
             for key, value in mod_fields.items():
-                if key == '_quantite' or not value:
+                if key in ('_quantite', 'nom') or not value:
                     continue
                 merged[key] = value
                 _apply_thread_field(partial, key, value)
-            # Compléter avec un parse libre (sans écraser les champs « hanova … »,
-            # et sans prendre « hanova » / la phrase entière pour le nom).
-            parsed = analyze_confirmation_message(msg.contenu, client=partial)
+            parsed = _drop_client_name_from_parse(
+                analyze_confirmation_message(msg.contenu, client=partial)
+            )
             for key in _ORDER_THREAD_FIELD_KEYS:
                 if not parsed.get(key) or key in merged:
-                    continue
-                if key == 'nom' and (
-                    _looks_like_modification(parsed[key]) or _looks_like_modification(msg.contenu)
-                ):
                     continue
                 merged[key] = parsed[key]
                 _apply_thread_field(partial, key, parsed[key])
             continue
-        parsed = analyze_confirmation_message(msg.contenu, client=partial)
+        parsed = _drop_client_name_from_parse(
+            analyze_confirmation_message(msg.contenu, client=partial)
+        )
         for key in _ORDER_THREAD_FIELD_KEYS:
             if parsed.get(key):
                 merged[key] = parsed[key]
@@ -1945,7 +2152,6 @@ def _sync_client_from_thread(commande: Commande) -> None:
     _apply_parsed_fields(client, collected)
     client.save(
         update_fields=[
-            'nom',
             'telephone',
             'adresse',
             'date_livraison_preferee',
@@ -1959,11 +2165,9 @@ def _collected_fields_snapshot(commande: Commande) -> dict[str, Any]:
     collected = _effective_collected_fields(commande)
     client = commande.client
     snapshot: dict[str, Any] = {}
-    nom = collected.get('nom') or (
-        client.nom if client.nom and client.nom not in _CLIENT_PLACEHOLDER_NAMES else None
-    )
-    if nom:
-        snapshot['nom'] = nom
+    # Toujours le nom Facebook/TikTok du JP.
+    if client.nom:
+        snapshot['nom'] = client.nom
     for key in ('telephone', 'adresse', 'date_livraison', 'heure_livraison'):
         if collected.get(key):
             snapshot[key] = collected[key]
@@ -1975,17 +2179,12 @@ def _collected_fields_snapshot(commande: Commande) -> dict[str, Any]:
 def _missing_confirmation_fields(commande: Commande) -> list[str]:
     """
     Champs encore requis pour confirmer cette commande.
+    Le nom vient du profil Facebook/TikTok (JP) : jamais demandé ni modifiable.
     Nouveau JP : téléphone, adresse, date et heure doivent être dans le fil MP.
     Reprise après annulation : on réutilise les infos de la commande annulée.
     """
     collected = _effective_collected_fields(commande)
-    client = commande.client
     missing = []
-    has_nom = bool(collected.get('nom')) or (
-        client.nom and client.nom not in _CLIENT_PLACEHOLDER_NAMES
-    )
-    if not has_nom:
-        missing.append('nom')
     if not collected.get('telephone'):
         missing.append('telephone')
     if not collected.get('adresse'):
@@ -2127,7 +2326,7 @@ def _revert_last_modification(commande: Commande, client: Client) -> dict[str, A
         recap = send_reprise_recap_message(commande)
         outbound = send_modification_revert_message(commande, reprise=True)
         return {
-            'status': 'Modification annulée — confirmez vos informations',
+            'status': 'Modification annulée - confirmez vos informations',
             'modification_annulee': True,
             'complet': False,
             'attente_confirmation': True,
@@ -2153,8 +2352,7 @@ def _revert_last_modification(commande: Commande, client: Client) -> dict[str, A
 
 
 def _apply_parsed_fields(client: Client, parsed_data: dict[str, str]) -> None:
-    if parsed_data.get('nom'):
-        client.nom = parsed_data['nom']
+    # Nom = profil Facebook/TikTok capturé au JP : jamais écrasé par un MP.
     if parsed_data.get('telephone'):
         client.telephone = _normalize_phone(parsed_data['telephone']) or parsed_data['telephone']
     if parsed_data.get('adresse'):
@@ -2212,29 +2410,13 @@ def handle_client_reply(
         return _revert_last_modification(commande, client)
 
     if _is_cancellation(inbound_text):
-        if commande.statut not in CANCELLABLE_STATUSES:
-            raise OrderConfirmationError(
-                f'La commande #{commande.id} ne peut plus être annulée '
-                f'(statut : {commande.get_statut_display()}).',
-                status_code=409,
-            )
-
-        commande.statut = Commande.STATUT_ANNULE
-        commande.save(update_fields=['statut'])
-        _clear_modification_snapshot(commande)
-
-        from .order_messaging import send_order_cancelled_message
-
-        outbound = send_order_cancelled_message(commande)
-        return {
-            'status': 'Commande annulée',
-            'annule': True,
-            'complet': False,
-            'commande': CommandeSerializer(commande).data,
-            'client': _client_snapshot(client),
-            'message_annulation': outbound.get('content'),
-            'message_delivery': outbound.get('delivery'),
-        }
+        # Inbound déjà enregistré plus haut.
+        return apply_commande_cancellation(
+            commande,
+            inbound_text='',
+            canal=canal_message,
+            record_inbound=False,
+        )
 
     # Modification après confirmation / préparation (adresse, tél, daty, qté…).
     if commande.statut in (Commande.STATUT_CONFIRME, Commande.STATUT_PREPARE):
@@ -2259,16 +2441,11 @@ def handle_client_reply(
             before = _client_snapshot(client)
             old_qty = commande.quantite_effective
             _save_modification_snapshot(commande, client, commande.quantite)
-            # Sans « hanova … », ne pas écraser le nom avec un parse hasardeux (ex. « tsy »).
-            if not _looks_like_modification(inbound_text) and not mod_fields.get('nom'):
-                parsed_data.pop('nom', None)
-            # Ne pas écraser le nom avec toute la phrase « hanova adresse … ».
-            if parsed_data.get('nom') and _looks_like_modification(parsed_data['nom']):
-                parsed_data.pop('nom', None)
+            parsed_data.pop('nom', None)
+            mod_fields.pop('nom', None)
             _apply_parsed_fields(client, parsed_data)
             client.save(
                 update_fields=[
-                    'nom',
                     'telephone',
                     'adresse',
                     'date_livraison_preferee',
@@ -2277,7 +2454,6 @@ def handle_client_reply(
             )
             after = _client_snapshot(client)
             for key, label in (
-                ('nom', 'anarana'),
                 ('telephone', 'numéro'),
                 ('adresse', 'adresse'),
                 ('date_livraison_preferee', 'daty'),
@@ -2300,7 +2476,7 @@ def handle_client_reply(
                     prompt_details=True,
                 )
                 return {
-                    'status': 'Modification demandée — précisez le champ',
+                    'status': 'Modification demandée - précisez le champ',
                     'modifie': False,
                     'complet': True,
                     'commande': CommandeSerializer(commande).data,
@@ -2367,7 +2543,7 @@ def handle_client_reply(
 
         outbound = send_completion_request_message(commande, missing)
         return {
-            'status': 'Informations partielles — complétez quand vous voulez',
+            'status': 'Informations partielles - complétez quand vous voulez',
             'complet': False,
             'champs_manquants': missing,
             'champs_recus': _collected_fields_snapshot(commande),
@@ -2385,7 +2561,7 @@ def handle_client_reply(
 
             outbound = send_reprise_recap_message(commande)
             status = (
-                'Modification enregistrée — confirmez vos informations'
+                'Modification enregistrée - confirmez vos informations'
                 if updated
                 else 'En attente de confirmation'
             )
@@ -2426,14 +2602,14 @@ def handle_client_reply(
                 parsed_data=parsed_data,
                 available=available,
                 requested=requested,
-                status="En liste d'attente — client préfère attendre",
+                status="En liste d'attente - client préfère attendre",
             )
         else:
             from .order_messaging import send_stock_partial_offer_message
 
             outbound = send_stock_partial_offer_message(commande, available)
             return {
-                'status': 'Stock insuffisant — offre du reste proposée',
+                'status': 'Stock insuffisant - offre du reste proposée',
                 'complet': False,
                 'en_attente': True,
                 'stock_restant': available,
@@ -2450,7 +2626,7 @@ def handle_client_reply(
             commande,
             parsed_data=parsed_data,
             available=available,
-            status="En liste d'attente — informations enregistrées",
+            status="En liste d'attente - informations enregistrées",
         )
 
     return _finalize_confirmation(commande, parsed_data=parsed_data)
@@ -2480,7 +2656,7 @@ def _waiting_list_result(
     parsed_data: dict[str, str] | None = None,
     available: int | None = None,
     requested: int | None = None,
-    status: str = "En liste d'attente — informations enregistrées",
+    status: str = "En liste d'attente - informations enregistrées",
 ) -> dict[str, Any]:
     """Envoie attente (file) ou rupture de stock, sauf si déjà confirmée entre-temps."""
     commande.refresh_from_db()
@@ -2495,7 +2671,7 @@ def _waiting_list_result(
         from .order_messaging import send_sold_out_message
 
         outbound = send_sold_out_message(commande)
-        status = 'Rupture de stock — invite à voir le live'
+        status = 'Rupture de stock - invite à voir le live'
         message_key = 'message_rupture'
     else:
         from .order_messaging import send_waiting_with_info_message
@@ -2563,7 +2739,7 @@ def _finalize_confirmation(
             return _waiting_list_result(
                 locked,
                 parsed_data=parsed_data,
-                status="En liste d'attente — informations enregistrées",
+                status="En liste d'attente - informations enregistrées",
             )
 
         try:
@@ -2573,7 +2749,7 @@ def _finalize_confirmation(
             return _waiting_list_result(
                 locked,
                 parsed_data=parsed_data,
-                status="En liste d'attente — informations enregistrées",
+                status="En liste d'attente - informations enregistrées",
             )
 
         _clear_modification_snapshot(locked)
@@ -2612,7 +2788,7 @@ def _finalize_confirmation(
 def expire_commande(commande: Commande) -> dict[str, Any] | None:
     """Expire un JP en tête de file resté incomplet trop longtemps.
 
-    On annule la commande (ce qui, via Commande.save(), fait monter le suivant de la file —
+    On annule la commande (ce qui, via Commande.save(), fait monter le suivant de la file -
     confirmé automatiquement s'il est déjà complet) puis on prévient le client expiré.
     """
     if commande.statut != Commande.STATUT_JP_CAPTURE:
@@ -2693,7 +2869,7 @@ def promote_queue(produit, variante=None, exclude_pk=None, live=None) -> None:
 
         result = _finalize_confirmation(commande, promoted=True, promote_next=False)
         if not result.get('complet'):
-            # Course sur le stock : plus éligible au moment du verrou — on s'arrête.
+            # Course sur le stock : plus éligible au moment du verrou - on s'arrête.
             return
         # Sinon on continue : une confirmation peut libérer la place suivante
         # uniquement si stock > 1 ; sinon le prochain tour verra available <= 0.
@@ -2723,9 +2899,12 @@ def process_inbound_private_message(
     page_id: str | None = None,
     id_field: str = 'facebook_id',
     referral_ref: str = '',
+    sender_name: str = '',
 ) -> dict[str, Any]:
     if not sender_id:
         raise OrderConfirmationError('Message privé vide ou expéditeur manquant.')
+
+    from .message_humanizer import apply_platform_display_name
 
     # Ouverture m.me?ref=jp_123 : rattache le PSID et rappelle les infos manquantes.
     if referral_ref.startswith('jp_'):
@@ -2749,6 +2928,9 @@ def process_inbound_private_message(
                     if not Client.objects.filter(facebook_id=sender_id).exclude(pk=client.pk).exists():
                         client.facebook_id = str(sender_id)
                         client.save(update_fields=['facebook_id'])
+                if sender_name:
+                    apply_platform_display_name(client, sender_name)
+                    client.refresh_from_db()
                 text = (message_text or '').strip()
                 if not text or text.startswith('[ref:'):
                     from .order_messaging import send_completion_request_message
@@ -2757,7 +2939,7 @@ def process_inbound_private_message(
                     if missing:
                         outbound = send_completion_request_message(commande, missing)
                         return {
-                            'status': 'Fil Messenger ouvert — infos demandées',
+                            'status': 'Fil Messenger ouvert - infos demandées',
                             'complet': False,
                             'champs_manquants': missing,
                             'commande_id': commande.id,
@@ -2796,6 +2978,36 @@ def process_inbound_private_message(
                 sender_id,
             )
 
+    if client and sender_name:
+        apply_platform_display_name(client, sender_name)
+        client.refresh_from_db()
+
+    # Si le nom Facebook manque encore, tenter le profil Messenger (page token).
+    if client and channel == 'Facebook' and page_id:
+        from .message_humanizer import is_placeholder_name
+
+        if is_placeholder_name(client.nom):
+            page = PageFacebook.objects.filter(page_id=str(page_id)).exclude(
+                access_token__isnull=True,
+            ).exclude(access_token='').first()
+            if page and page.access_token:
+                try:
+                    from .facebook_oauth import _graph_request
+
+                    profile = _graph_request(
+                        str(sender_id),
+                        {'fields': 'name', 'access_token': page.access_token},
+                        method='GET',
+                    )
+                    apply_platform_display_name(client, (profile or {}).get('name'))
+                    client.refresh_from_db()
+                except Exception:  # noqa: BLE001
+                    logger.debug(
+                        'Profil Messenger indisponible pour PSID %s',
+                        sender_id,
+                        exc_info=True,
+                    )
+
     from .human_assistance import (
         _looks_like_order_info,
         analyze_client_message,
@@ -2808,6 +3020,11 @@ def process_inbound_private_message(
     analysis = analyze_client_message(message_text, vendeur=vendeur)
     intent = classify_private_message_intent(message_text, client=client)
     intent_name = intent.get('intent', 'autre')
+
+    # Priorité métier : un signal d'annulation (regex) force toujours l'intent,
+    # même si le LLM a classé « modification » / « infos » / « autre ».
+    if _is_cancellation(message_text) and not _is_modification_cancellation(message_text):
+        intent_name = 'annulation'
 
     if intent_name == 'remerciement':
         if not client:
@@ -2896,18 +3113,10 @@ def process_inbound_private_message(
                 'Aucun client trouvé pour cet identifiant. Postez d\'abord un JP pendant le live.',
                 status_code=404,
             )
-        commande = find_pending_commande(client, vendeur=vendeur) or find_cancellable_commande(
-            client, vendeur=vendeur
-        )
-        if not commande:
-            raise OrderConfirmationError(
-                'Aucune commande active à annuler pour ce client.',
-                status_code=404,
-            )
-        # Ne pas passer par l'escalade « hors sujet » : l'annulation est un intent métier.
-        return handle_client_reply(
-            commande,
-            {},
+        # Force l'annulation même si le texte n'a matché que via LLM (pas le regex).
+        return cancel_client_active_commandes(
+            client,
+            vendeur=vendeur,
             inbound_text=message_text,
             canal=channel,
         )

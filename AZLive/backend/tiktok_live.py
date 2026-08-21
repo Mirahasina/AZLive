@@ -540,7 +540,7 @@ def cloturer_tiktok_live(live: Live, *, reason: str = 'tiktok_stream_end') -> bo
         live.diffusion_plateformes = diffusion
         live.save(update_fields=['diffusion_plateformes'])
         logger.info(
-            'TikTok terminé sur live #%s (%s) — Facebook encore live, statut AZLive inchangé',
+            'TikTok terminé sur live #%s (%s) - Facebook encore live, statut AZLive inchangé',
             live.pk,
             reason,
         )

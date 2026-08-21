@@ -92,7 +92,7 @@ def validate_oauth_state(state: str) -> str:
     return verifier
 
 
-def build_oauth_url(state: str, code_challenge: str) -> str:
+def build_oauth_url(state: str, code_challenge: str, *, force_login: bool = False) -> str:
     params = {
         'client_key': settings.TIKTOK_CLIENT_KEY,
         'response_type': 'code',
@@ -102,6 +102,9 @@ def build_oauth_url(state: str, code_challenge: str) -> str:
         'code_challenge': code_challenge,
         'code_challenge_method': 'S256',
     }
+    # Toujours afficher la page d'auth (évite de réutiliser silencieusement le compte déjà connecté).
+    if force_login:
+        params['disable_auto_auth'] = 1
     return f'{TIKTOK_AUTH_URL}?{urllib.parse.urlencode(params)}'
 
 
@@ -276,7 +279,12 @@ def validate_public_oauth_state(state: str) -> tuple[int, str]:
     return live_id, verifier
 
 
-def build_public_oauth_url(state: str, code_challenge: str) -> str:
+def build_public_oauth_url(
+    state: str,
+    code_challenge: str,
+    *,
+    force_login: bool = False,
+) -> str:
     # Même redirect_uri que la connexion vendeur (déjà enregistrée dans le portail TikTok).
     redirect_uri = settings.TIKTOK_REDIRECT_URI
     scopes = settings.TIKTOK_PUBLIC_OAUTH_SCOPES
@@ -289,11 +297,15 @@ def build_public_oauth_url(state: str, code_challenge: str) -> str:
         'code_challenge': code_challenge,
         'code_challenge_method': 'S256',
     }
+    # force_login / « autre compte » : toujours afficher la page d'auth TikTok
+    # (évite de réutiliser silencieusement la session déjà connectée).
+    if force_login:
+        params['disable_auto_auth'] = 1
     return f'{TIKTOK_AUTH_URL}?{urllib.parse.urlencode(params)}'
 
 
 def get_public_user_profile(access_token: str) -> dict[str, Any]:
-    """Profil TikTok pour un client (formulaire public) — inclut username si scope accordé."""
+    """Profil TikTok pour un client (formulaire public) - inclut username si scope accordé."""
     payload = _tiktok_request(
         TIKTOK_USER_INFO_URL,
         {'fields': 'open_id,union_id,avatar_url,display_name,username'},

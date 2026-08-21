@@ -12,6 +12,7 @@ from .facebook_live import (
 )
 from .facebook_live_comments import (
     ensure_facebook_comment_listener,
+    live_should_capture_facebook_comments,
     start_facebook_comment_listener,
     stop_facebook_comment_listener,
 )
@@ -90,8 +91,14 @@ def _provision_webrtc(live: Live, facebook_broadcasts: list[dict]) -> dict | Non
     try:
         ingest = provision_live_path(live, secure_stream_url)
     except MediaMTXError as exc:
-        # Le live Facebook existe déjà ; on n'échoue pas, mais on signale l'absence de pont.
-        return {'status': 'error', 'detail': exc.message}
+        # Sans MediaMTX, le live Facebook API existe mais la page reste sans image.
+        raise LiveServiceError(
+            'Le live Facebook a été créé, mais le pont caméra (MediaMTX) est indisponible : '
+            f'{exc.message}. Démarrez MediaMTX (`cd mediamtx && docker compose up -d`) '
+            'puis relancez le live pour diffuser sur la page.',
+            status_code=503,
+            payload={'detail': exc.message},
+        ) from exc
     return {
         'status': 'ready',
         'path': ingest['path'],
@@ -126,12 +133,6 @@ def _ensure_tiktok_username(vendeur) -> None:
 @transaction.atomic
 def demarrer_live(live: Live) -> Live:
     if live.statut == Live.STATUT_EN_COURS and live.diffusion_plateformes:
-        from .facebook_live_comments import (
-            ensure_facebook_comment_listener,
-            live_should_capture_facebook_comments,
-            start_facebook_comment_listener,
-        )
-
         facebook_broadcasts = list((live.diffusion_plateformes or {}).get('facebook') or [])
         if live_should_capture_facebook_comments(live):
             pages = resolve_live_pages(live)
@@ -174,7 +175,13 @@ def demarrer_live(live: Live) -> Live:
 
     _ensure_webhooks(live.vendeur)
 
-    webrtc = _provision_webrtc(live, facebook_broadcasts)
+    try:
+        webrtc = _provision_webrtc(live, facebook_broadcasts)
+    except LiveServiceError:
+        # Live Graph déjà créé : on l'arrête pour ne pas laisser un direct fantôme.
+        if facebook_broadcasts and not live.vendeur.is_demo_mode:
+            stop_facebook_broadcasts(facebook_broadcasts, _pages_by_id(pages))
+        raise
 
     diffusion = {
         'facebook': facebook_broadcasts,
