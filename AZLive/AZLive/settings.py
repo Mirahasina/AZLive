@@ -44,13 +44,20 @@ if 'test' not in sys.argv:
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/5.2/howto/deployment/checklist/
 
-# SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = 'django-insecure-5q3tnh8b$92n8^-abr4icuzsp3ato^6n=k7)0oit3uz&i5+22+'
+# Local fallback kept for `runserver` ; sur Render définir SECRET_KEY dans Environment.
+SECRET_KEY = os.environ.get(
+    'SECRET_KEY',
+    'django-insecure-5q3tnh8b$92n8^-abr4icuzsp3ato^6n=k7)0oit3uz&i5+22+',
+)
 
-# SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+# Render / prod : DEBUG=False. Local : True par défaut (ou DEBUG=true dans .env).
+DEBUG = os.environ.get('DEBUG', 'True').lower() in ('1', 'true', 'yes', 'on')
 
-ALLOWED_HOSTS = ['*']
+ALLOWED_HOSTS = [
+    host.strip()
+    for host in os.environ.get('ALLOWED_HOSTS', '*').split(',')
+    if host.strip()
+]
 
 
 # Application definition
@@ -70,6 +77,7 @@ INSTALLED_APPS = [
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
+    'whitenoise.middleware.WhiteNoiseMiddleware',
     "corsheaders.middleware.CorsMiddleware",
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
@@ -77,7 +85,6 @@ MIDDLEWARE = [
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
-    
 ]
 
 ROOT_URLCONF = 'AZLive.urls'
@@ -171,6 +178,16 @@ USE_TZ = True
 # https://docs.djangoproject.com/en/5.2/howto/static-files/
 
 STATIC_URL = 'static/'
+STATIC_ROOT = BASE_DIR / 'staticfiles'
+STORAGES = {
+    'default': {
+        'BACKEND': 'django.core.files.storage.FileSystemStorage',
+    },
+    'staticfiles': {
+        # Manifest cassé si un fichier référencé manque ; Compressed suffit pour Render.
+        'BACKEND': 'whitenoise.storage.CompressedStaticFilesStorage',
+    },
+}
 MEDIA_URL = '/media/'
 MEDIA_ROOT = BASE_DIR / 'media'
 
@@ -305,3 +322,17 @@ if _extra_hosts:
     ALLOWED_HOSTS = ['*'] if ALLOWED_HOSTS == ['*'] else ALLOWED_HOSTS + [
         host.strip() for host in _extra_hosts.split(',') if host.strip()
     ]
+
+# HTTPS admin / POST depuis le domaine Render (ex. https://azlive.onrender.com)
+CSRF_TRUSTED_ORIGINS = [
+    origin.strip().rstrip('/')
+    for origin in os.environ.get('CSRF_TRUSTED_ORIGINS', '').split(',')
+    if origin.strip()
+]
+_public_base = os.environ.get('AZLIVE_PUBLIC_BASE_URL', '').rstrip('/')
+if _public_base.startswith('https://') and _public_base not in CSRF_TRUSTED_ORIGINS:
+    CSRF_TRUSTED_ORIGINS.append(_public_base)
+
+# Derrière le proxy TLS de Render
+if not DEBUG:
+    SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
